@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use chip_cad::{CurveKind, MeasureSnapTarget, PickFilter, PickTarget, SurfaceKind};
+use chip_cad::{CurveKind, PickFilter, PickTarget, SurfaceKind};
 use chip_cam::{WcsOriginMode, apply_machinability_fix};
 
 use crate::{
@@ -15,7 +15,7 @@ use crate::{
         model_inspector::{ModelInspectorCtx, show_model_inspector},
         operation_inspector::{
             OperationInspectorAction, OperationInspectorCtx, avoid_card::mark_ops_dirty_with_rest,
-            machinability_card::evaluate_operation_machinability, show_operation_inspector,
+            show_operation_inspector,
         },
         project_properties::{ProjectPropertiesCtx, show_project_inspector},
         project_tool_inspector::{
@@ -65,6 +65,7 @@ impl PaneBehavior<'_> {
         let active_machine = self.app.active_machine().cloned();
         let resolved_active_setup = self
             .app
+            .workers
             .cached_frame_geo
             .as_ref()
             .and_then(|fg| fg.resolved_setup.as_ref())
@@ -72,7 +73,7 @@ impl PaneBehavior<'_> {
             .cloned();
         egui::Frame::NONE.inner_margin(8.0).show(ui, |ui| {
             let eff_cad = self.app.effective_cad_arc();
-            let cad_ref = self.app.model.as_ref().map(|m| m.doc.as_ref());
+            let cad_ref = self.app.assets.model.as_ref().map(|m| m.doc.as_ref());
             let cad_rev = eff_cad.as_ref().map_or(0, |(_, r)| *r);
             let action = show_cam_browser(
                 ui,
@@ -85,15 +86,15 @@ impl PaneBehavior<'_> {
                     toolpath_cache: &self.app.toolpath_cache,
                     cad_doc: cad_ref,
                     cad_revision: cad_rev,
-                    active_setup_idx: &mut self.app.active_setup_idx,
-                    focus: &mut self.app.inspector_focus,
-                    setup_tab: &mut self.app.setup_tab,
-                    op_tab: &mut self.app.op_tab,
-                    pick_mode: &mut self.app.pick_mode,
-                    hidden_operation_ids: &mut self.app.hidden_operation_ids,
-                    editing_shared_avoid_id: &mut self.app.editing_shared_avoid_id,
-                    selected_sketch_entity_idx: &mut self.app.selected_sketch_entity_idx,
-                    selected_fixture_idx: &mut self.app.selected_fixture_idx,
+                    active_setup_idx: &mut self.app.selection.active_setup_idx,
+                    focus: &mut self.app.selection.inspector_focus,
+                    setup_tab: &mut self.app.selection.setup_tab,
+                    op_tab: &mut self.app.selection.op_tab,
+                    pick_mode: &mut self.app.selection.pick_mode,
+                    hidden_operation_ids: &mut self.app.overlay_prefs.hidden_operation_ids,
+                    editing_shared_avoid_id: &mut self.app.selection.editing_shared_avoid_id,
+                    selected_sketch_entity_idx: &mut self.app.selection.selected_sketch_entity_idx,
+                    selected_fixture_idx: &mut self.app.selection.selected_fixture_idx,
                 },
             );
 
@@ -135,8 +136,8 @@ impl PaneBehavior<'_> {
                         self.app.create_new_setup_xy_sketch();
                     }
                     BrowserAction::StartPickSketchHostFace => {
-                        self.app.pick_mode = ViewportPickMode::PickSketchHostFace {
-                            setup_idx: self.app.active_setup_idx,
+                        self.app.selection.pick_mode = ViewportPickMode::PickSketchHostFace {
+                            setup_idx: self.app.selection.active_setup_idx,
                         };
                     }
                     BrowserAction::LookAtSketch(sk_idx) => {
@@ -159,7 +160,7 @@ impl PaneBehavior<'_> {
                             .trigger_generate_dirty(Some(setup_idx), Some(&op_id));
                     }
                     BrowserAction::InvalidateFrameCache => {
-                        self.app.cached_frame_geo = None;
+                        self.app.workers.cached_frame_geo = None;
                     }
                     BrowserAction::Log(msg) => {
                         self.app.logs.push(msg);
@@ -178,7 +179,7 @@ impl PaneBehavior<'_> {
         self.app.highlight.sketch_preview_polys.clear();
         self.app.highlight.sketch_snap_marker = None;
 
-        if let ViewportPickMode::Measure = self.app.pick_mode {
+        if let ViewportPickMode::Measure = self.app.selection.pick_mode {
             if let Some(cursor_pos) = response.hover_pos()
                 && let Some(ray) = self.app.camera.screen_ray(cursor_pos, avail)
             {
@@ -192,10 +193,12 @@ impl PaneBehavior<'_> {
                     right_click,
                 );
             } else {
-                self.app.measure_state.hovered_snap = None;
-                self.app.highlight.measure_state = Some(self.app.measure_state.clone());
+                self.app.selection.measure_state.hovered_snap = None;
+                self.app.highlight.measure_state = Some(self.app.selection.measure_state.clone());
             }
-        } else if let ViewportPickMode::PlaceContourTab { setup_idx, op_idx } = self.app.pick_mode {
+        } else if let ViewportPickMode::PlaceContourTab { setup_idx, op_idx } =
+            self.app.selection.pick_mode
+        {
             if let Some(cursor_pos) = response.hover_pos()
                 && let Some(ray) = self.app.camera.screen_ray(cursor_pos, avail)
             {
@@ -211,7 +214,9 @@ impl PaneBehavior<'_> {
                     right_click,
                 );
             }
-        } else if let ViewportPickMode::SketchAuthor { sketch_idx, tool } = self.app.pick_mode {
+        } else if let ViewportPickMode::SketchAuthor { sketch_idx, tool } =
+            self.app.selection.pick_mode
+        {
             if let Some(cursor_pos) = response.hover_pos()
                 && let Some(ray) = self.app.camera.screen_ray(cursor_pos, avail)
             {
@@ -231,7 +236,9 @@ impl PaneBehavior<'_> {
                     self.app.sync_viewport_scene_state();
                 }
             }
-        } else if let ViewportPickMode::PlaceFixtureClamp { setup_idx, kind } = self.app.pick_mode {
+        } else if let ViewportPickMode::PlaceFixtureClamp { setup_idx, kind } =
+            self.app.selection.pick_mode
+        {
             if let Some(cursor_pos) = response.hover_pos()
                 && let Some(ray) = self.app.camera.screen_ray(cursor_pos, avail)
             {
@@ -248,12 +255,14 @@ impl PaneBehavior<'_> {
                     self.app.sync_viewport_scene_state();
                 }
             }
-        } else if let ViewportPickMode::PickModelLayFlatFace { model_idx } = self.app.pick_mode {
+        } else if let ViewportPickMode::PickModelLayFlatFace { model_idx } =
+            self.app.selection.pick_mode
+        {
             if let Some(cursor_pos) = response.hover_pos()
                 && let Some(ray) = self.app.camera.screen_ray(cursor_pos, avail)
             {
                 let mm_per_px = self.app.camera.mm_per_pixel(avail.height());
-                if let Some(m) = &self.app.model {
+                if let Some(m) = &self.app.assets.model {
                     let hit = m
                         .picker
                         .pick(&m.doc, &ray, mm_per_px, PickFilter::FacesOnly);
@@ -269,7 +278,7 @@ impl PaneBehavior<'_> {
         } else {
             let filter = self.app.effective_pick_filter();
             let picking_3d_host_face = matches!(
-                self.app.pick_mode,
+                self.app.selection.pick_mode,
                 ViewportPickMode::PickSketchHostFace { .. }
                     | ViewportPickMode::RebindSketchHostFace { .. }
             );
@@ -288,7 +297,7 @@ impl PaneBehavior<'_> {
                 };
                 self.app.highlight.hovered_sketch = sketch_hit;
 
-                if let Some(m) = &self.app.model {
+                if let Some(m) = &self.app.assets.model {
                     let pick_ray = self.app.highlight.world_ray_to_cad_model_space(&ray);
                     let hit = m.picker.pick(&m.doc, &pick_ray, mm_per_px, filter);
                     self.app.highlight.hovered = hit.map(|h| h.target);
@@ -306,9 +315,9 @@ impl PaneBehavior<'_> {
             if was_primary_click {
                 if let Some(sk_hit) = clicked_sketch {
                     self.app.handle_viewport_sketch_click(sk_hit);
-                } else if self.app.model.is_some() {
+                } else if self.app.assets.model.is_some() {
                     self.app.handle_viewport_pick_click(clicked_target);
-                } else if self.app.pick_mode == ViewportPickMode::InspectEntity {
+                } else if self.app.selection.pick_mode == ViewportPickMode::InspectEntity {
                     self.app.highlight.selected_sketch = None;
                 }
                 self.app.sync_viewport_scene_state();
@@ -325,6 +334,7 @@ impl PaneBehavior<'_> {
         ) {
             let doc_ref = self
                 .app
+                .assets
                 .model
                 .as_ref()
                 .map(|m| (m.doc.as_ref(), m.revision));
@@ -344,10 +354,10 @@ impl PaneBehavior<'_> {
             );
         }
 
-        if self.app.show_27pt_dots
-            && let InspectorFocus::Setup { setup_idx } = self.app.inspector_focus
-            && self.app.setup_tab == SetupTab::Wcs
-            && setup_idx == self.app.active_setup_idx
+        if self.app.overlay_prefs.show_27pt_dots
+            && let InspectorFocus::Setup { setup_idx } = self.app.selection.inspector_focus
+            && self.app.selection.setup_tab == SetupTab::Wcs
+            && setup_idx == self.app.selection.active_setup_idx
             && let Some(Ok(rs)) = self.app.active_resolved_setup()
             && let Some(setup) = self.app.project.setups.get(setup_idx)
         {
@@ -403,26 +413,28 @@ impl PaneBehavior<'_> {
         }
 
         let is_op_geom_pick = matches!(
-            self.app.pick_mode,
+            self.app.selection.pick_mode,
             ViewportPickMode::OpPlanarFaces { .. }
                 | ViewportPickMode::OpClosedLoops { .. }
                 | ViewportPickMode::OpOpenChain { .. }
                 | ViewportPickMode::OpCylindricalHoles { .. }
         );
         let avoid_target_label: Option<String> =
-            if let ViewportPickMode::PickKeepOutGeometry { region_idx } = self.app.pick_mode {
+            if let ViewportPickMode::PickKeepOutGeometry { region_idx } =
+                self.app.selection.pick_mode
+            {
                 self.app
                     .project
                     .avoid_regions
                     .get(region_idx)
                     .map(|sr| format!("Avoid: {}", sr.name))
             } else if is_op_geom_pick {
-                if let Some(eid) = self.app.editing_shared_avoid_id.as_deref() {
+                if let Some(eid) = self.app.selection.editing_shared_avoid_id.as_deref() {
                     self.app
                         .project
                         .avoid_region(eid)
                         .map(|sr| format!("Avoid: {}", sr.name))
-                } else if self.app.geometry_pick_target
+                } else if self.app.selection.geometry_pick_target
                     == crate::panels::GeometryPickTarget::AvoidKeepOut
                 {
                     Some("Avoid / Keep-Out".to_string())
@@ -432,7 +444,7 @@ impl PaneBehavior<'_> {
             } else {
                 None
             };
-        let guidance_badge = match self.app.pick_mode {
+        let guidance_badge = match self.app.selection.pick_mode {
             ViewportPickMode::PickKeepOutGeometry { region_idx } => self
                 .app
                 .project
@@ -445,11 +457,11 @@ impl PaneBehavior<'_> {
                 setup_idx, op_idx, ..
             }
             | ViewportPickMode::OpCylindricalHoles { setup_idx, op_idx } => {
-                if let Some(eid) = self.app.editing_shared_avoid_id.as_deref()
+                if let Some(eid) = self.app.selection.editing_shared_avoid_id.as_deref()
                     && let Some(sr) = self.app.project.avoid_region(eid)
                 {
                     Some(format!("{} avoid", sr.selections.len()))
-                } else if self.app.geometry_pick_target
+                } else if self.app.selection.geometry_pick_target
                     == crate::panels::GeometryPickTarget::AvoidKeepOut
                 {
                     self.app
@@ -480,10 +492,11 @@ impl PaneBehavior<'_> {
                     _ => None,
                 }),
             ViewportPickMode::SketchAuthor { .. } => {
-                if self.app.sketch_author_start_xy.is_some() {
+                if self.app.selection.sketch_author_start_xy.is_some() {
                     Some("1st point set".to_string())
                 } else {
                     self.app
+                        .selection
                         .sketch_snap_grid_mm
                         .map(|g| format!("Grid: {g} mm"))
                 }
@@ -495,9 +508,9 @@ impl PaneBehavior<'_> {
                 .get(setup_idx)
                 .map(|s| format!("{} fixture(s)", s.fixtures.len())),
             ViewportPickMode::Measure => {
-                if self.app.measure_state.anchor2.is_some() {
+                if self.app.selection.measure_state.anchor2.is_some() {
                     Some("2 picks".to_string())
-                } else if self.app.measure_state.anchor1.is_some() {
+                } else if self.app.selection.measure_state.anchor1.is_some() {
                     Some("1st set - click 2nd".to_string())
                 } else {
                     Some("Ready".to_string())
@@ -508,26 +521,27 @@ impl PaneBehavior<'_> {
         if let Some(g_act) = draw_viewport_guidance_hud(
             ui,
             avail,
-            self.app.pick_mode,
+            self.app.selection.pick_mode,
             guidance_badge.as_deref(),
             avoid_target_label.as_deref(),
         ) {
             match g_act {
                 GuidanceHudAction::Done | GuidanceHudAction::Cancel => {
-                    self.app.sketch_author_start_xy = None;
-                    self.app.measure_state.reset_all();
+                    self.app.selection.sketch_author_start_xy = None;
+                    self.app.selection.measure_state.reset_all();
                     self.app.highlight.measure_state = None;
-                    self.app.pick_mode = ViewportPickMode::InspectEntity;
-                    self.app.geometry_pick_target = crate::panels::GeometryPickTarget::CuttingArea;
-                    self.app.editing_shared_avoid_id = None;
+                    self.app.selection.pick_mode = ViewportPickMode::InspectEntity;
+                    self.app.selection.geometry_pick_target =
+                        crate::panels::GeometryPickTarget::CuttingArea;
+                    self.app.selection.editing_shared_avoid_id = None;
                     self.app.highlight.preview_tab_marker_wcs = None;
                 }
                 GuidanceHudAction::ResetChainStart => {
                     if let ViewportPickMode::OpOpenChain {
                         setup_idx, op_idx, ..
-                    } = self.app.pick_mode
+                    } = self.app.selection.pick_mode
                     {
-                        self.app.pick_mode = ViewportPickMode::OpOpenChain {
+                        self.app.selection.pick_mode = ViewportPickMode::OpOpenChain {
                             setup_idx,
                             op_idx,
                             start_edge: None,
@@ -539,9 +553,9 @@ impl PaneBehavior<'_> {
 
         let sim_active = self.app.highlight.sim_stock_source.is_some()
             || self.app.highlight.sim_tool_mesh.is_some();
-        let focused_active_op = match self.app.inspector_focus {
+        let focused_active_op = match self.app.selection.inspector_focus {
             InspectorFocus::Operation { setup_idx, op_idx }
-                if setup_idx == self.app.active_setup_idx =>
+                if setup_idx == self.app.selection.active_setup_idx =>
             {
                 self.app
                     .project
@@ -554,7 +568,7 @@ impl PaneBehavior<'_> {
         let (_, indexed_badge) = crate::app::viewport_controller::resolve_effective_viewport_rotary(
             sim_active,
             self.app.highlight.sim_rotary_deg,
-            self.app.prefs.auto_rotate_indexed_op,
+            self.app.session.prefs.auto_rotate_indexed_op,
             focused_active_op,
             self.app.highlight.rotary,
         );
@@ -562,7 +576,7 @@ impl PaneBehavior<'_> {
             .app
             .project
             .setups
-            .get(self.app.active_setup_idx)
+            .get(self.app.selection.active_setup_idx)
             .map(|s| {
                 let code = s.wcs_slot.short_code();
                 let idx_str = indexed_badge
@@ -590,8 +604,8 @@ impl PaneBehavior<'_> {
             .unwrap_or_else(|| "No Setup".to_string());
 
         // Floating Measure hover snap label + Readout Card
-        if self.app.pick_mode == ViewportPickMode::Measure {
-            if let Some(hov) = &self.app.measure_state.hovered_snap {
+        if self.app.selection.pick_mode == ViewportPickMode::Measure {
+            if let Some(hov) = &self.app.selection.measure_state.hovered_snap {
                 draw_measure_hover_label(
                     ui,
                     avail,
@@ -605,7 +619,7 @@ impl PaneBehavior<'_> {
             if let Some(m_act) = draw_measure_readout_card(
                 ui,
                 avail,
-                &self.app.measure_state,
+                &self.app.selection.measure_state,
                 self.app.project.display_units,
                 focused_op_name,
             ) {
@@ -615,8 +629,9 @@ impl PaneBehavior<'_> {
                         self.app.logs.push(format!("Copied measurement: {txt}"));
                     }
                     MeasureCardAction::Clear => {
-                        self.app.measure_state.clear_measurement();
-                        self.app.highlight.measure_state = Some(self.app.measure_state.clone());
+                        self.app.selection.measure_state.clear_measurement();
+                        self.app.highlight.measure_state =
+                            Some(self.app.selection.measure_state.clone());
                     }
                     MeasureCardAction::SetOperationBottomZ(z_wcs) => {
                         self.app.apply_measure_bottom_z_to_focused_op(z_wcs);
@@ -631,8 +646,8 @@ impl PaneBehavior<'_> {
             draw_reach_legend_overlay(
                 ui,
                 avail,
-                self.app.reach_result.as_deref(),
-                self.app.reach_in_flight_key.is_some(),
+                self.app.workers.reach_result.as_deref(),
+                self.app.workers.reach_in_flight_key.is_some(),
                 self.app.project.display_units,
             );
         }
@@ -642,7 +657,7 @@ impl PaneBehavior<'_> {
             avail,
             &mut self.app.camera,
             &mut self.app.highlight,
-            self.app.pick_mode,
+            self.app.selection.pick_mode,
             &setup_lbl,
         ) {
             match hud_act {
@@ -657,13 +672,12 @@ impl PaneBehavior<'_> {
         let _ = self.app.ensure_frame_geo_cached();
         // Temporarily take `cached_frame_geo` out of `self.app` so we can borrow its pre-computed
         // `ResolvedSetup` & `ExtractedSelectionSummary` alongside `&mut self.app.project` with zero clones!
-        let mut frame_geo = self.app.cached_frame_geo.take();
+        let mut frame_geo = self.app.workers.cached_frame_geo.take();
 
-        egui::Frame::NONE
-            .inner_margin(8.0)
-            .show(ui, |ui| match self.app.inspector_focus {
+        egui::Frame::NONE.inner_margin(8.0).show(ui, |ui| {
+            match self.app.selection.inspector_focus {
                 InspectorFocus::Setup { setup_idx } => {
-                    let cad_ref = self.app.model.as_ref().map(|m| m.doc.as_ref());
+                    let cad_ref = self.app.assets.model.as_ref().map(|m| m.doc.as_ref());
                     let resolved_ref = frame_geo
                         .as_ref()
                         .and_then(|fg| fg.resolved_setup.as_ref())
@@ -722,6 +736,7 @@ impl PaneBehavior<'_> {
                     let mut open_soft_jaw_wizard = false;
                     let project_dir = self
                         .app
+                        .session
                         .project_file_path
                         .as_deref()
                         .and_then(std::path::Path::parent);
@@ -736,12 +751,12 @@ impl PaneBehavior<'_> {
                             resolved: resolved_ref,
                             resolved_fixtures: resolved_fixtures_ref,
                             fixture_safety,
-                            tab: &mut self.app.setup_tab,
-                            pick_mode: &mut self.app.pick_mode,
-                            selected_fixture_idx: &mut self.app.selected_fixture_idx,
+                            tab: &mut self.app.selection.setup_tab,
+                            pick_mode: &mut self.app.selection.pick_mode,
+                            selected_fixture_idx: &mut self.app.selection.selected_fixture_idx,
                             show_fixtures: &mut self.app.highlight.show_fixtures,
-                            show_27pt_dots: &mut self.app.show_27pt_dots,
-                            show_z_planes: &mut self.app.show_z_planes,
+                            show_27pt_dots: &mut self.app.overlay_prefs.show_27pt_dots,
+                            show_z_planes: &mut self.app.overlay_prefs.show_z_planes,
                             machines: &self.app.machines,
                             open_machine_manager: &mut open_machine_manager,
                             open_post_inspector: &mut open_post_inspector,
@@ -778,12 +793,12 @@ impl PaneBehavior<'_> {
                         self.app.open_post_profile_inspector(Some(&pid));
                     }
                     if align {
-                        self.app.cached_frame_geo = frame_geo.take();
+                        self.app.workers.cached_frame_geo = frame_geo.take();
                         self.app.align_camera_to_active_setup();
                     }
                 }
                 InspectorFocus::Operation { setup_idx, op_idx } => {
-                    let cad_ref = self.app.model.as_ref().map(|m| m.doc.as_ref());
+                    let cad_ref = self.app.assets.model.as_ref().map(|m| m.doc.as_ref());
                     let resolved_opt = frame_geo
                         .as_ref()
                         .and_then(|fg| fg.resolved_setup.as_ref())
@@ -807,7 +822,7 @@ impl PaneBehavior<'_> {
                     let sim_active = self.app.highlight.sim_stock_source.is_some()
                         || self.app.highlight.sim_tool_mesh.is_some();
                     let eff_resolved = resolved_opt.map(|rs| {
-                        if setup_idx == self.app.active_setup_idx
+                        if setup_idx == self.app.selection.active_setup_idx
                             && let Some(op) = self
                                 .app
                                 .project
@@ -817,7 +832,7 @@ impl PaneBehavior<'_> {
                         {
                             crate::app::viewport_controller::effective_setup_for_indexed_preview(
                                 rs,
-                                self.app.prefs.auto_rotate_indexed_op,
+                                self.app.session.prefs.auto_rotate_indexed_op,
                                 sim_active,
                                 op,
                             )
@@ -842,19 +857,26 @@ impl PaneBehavior<'_> {
                             history: &mut self.app.history,
                             cad_doc: cad_ref,
                             resolved_setup: eff_resolved.as_deref(),
-                            surface_mesh: self.app.boundary_preview_cache.cached_surface(),
+                            surface_mesh: self.app.workers.boundary_preview_cache.cached_surface(),
                             boundary_preview: self.app.highlight.boundary_preview.as_deref(),
                             selected_face_normal_wcs,
                             extracted: extracted_ref,
-                            tab: &mut self.app.op_tab,
-                            pick_mode: &mut self.app.pick_mode,
-                            pick_target: &mut self.app.geometry_pick_target,
-                            editing_shared_avoid_id: &mut self.app.editing_shared_avoid_id,
-                            lock_chipload: &mut self.app.lock_chipload,
-                            show_z_planes: &mut self.app.show_z_planes,
+                            tab: &mut self.app.selection.op_tab,
+                            pick_mode: &mut self.app.selection.pick_mode,
+                            pick_target: &mut self.app.selection.geometry_pick_target,
+                            editing_shared_avoid_id: &mut self
+                                .app
+                                .selection
+                                .editing_shared_avoid_id,
+                            lock_chipload: &mut self.app.overlay_prefs.lock_chipload,
+                            show_z_planes: &mut self.app.overlay_prefs.show_z_planes,
                             show_reach_heatmap: &mut self.app.highlight.show_reach_heatmap,
                             force_expand_machinability,
-                            auto_rotate_indexed_op: &mut self.app.prefs.auto_rotate_indexed_op,
+                            auto_rotate_indexed_op: &mut self
+                                .app
+                                .session
+                                .prefs
+                                .auto_rotate_indexed_op,
                             open_tool_manager: &mut self.app.modals.tool_library.open,
                             sim_engine: self.app.sim_panel.engine,
                         },
@@ -865,7 +887,7 @@ impl PaneBehavior<'_> {
                             frame_geo = None;
                         }
                         Some(OperationInspectorAction::OpenProjectMaterial) => {
-                            self.app.inspector_focus = InspectorFocus::Project;
+                            self.app.selection.inspector_focus = InspectorFocus::Project;
                             frame_geo = None;
                         }
                         None => {}
@@ -875,7 +897,7 @@ impl PaneBehavior<'_> {
                     self.ui_cad_entity_inspector(ui);
                 }
                 InspectorFocus::Model { model_idx } => {
-                    let cad_ref = self.app.model.as_ref().map(|m| m.doc.as_ref());
+                    let cad_ref = self.app.assets.model.as_ref().map(|m| m.doc.as_ref());
                     let res = show_model_inspector(
                         ui,
                         ModelInspectorCtx {
@@ -883,9 +905,12 @@ impl PaneBehavior<'_> {
                             model_idx,
                             history: &mut self.app.history,
                             cad_doc: cad_ref,
-                            lock_uniform_scale: &mut self.app.lock_model_uniform_scale,
-                            pick_mode: &mut self.app.pick_mode,
-                            focus: &mut self.app.inspector_focus,
+                            lock_uniform_scale: &mut self
+                                .app
+                                .overlay_prefs
+                                .lock_model_uniform_scale,
+                            pick_mode: &mut self.app.selection.pick_mode,
+                            focus: &mut self.app.selection.inspector_focus,
                         },
                     );
                     if res.role_changed {
@@ -913,7 +938,7 @@ impl PaneBehavior<'_> {
                         ui,
                         ProjectPropertiesCtx {
                             project: &self.app.project,
-                            project_file_path: self.app.project_file_path.as_deref(),
+                            project_file_path: self.app.session.project_file_path.as_deref(),
                             machines: &self.app.machines,
                         },
                     );
@@ -926,12 +951,15 @@ impl PaneBehavior<'_> {
                         KeepOutInspectorCtx {
                             project: &mut self.app.project,
                             region_idx,
-                            active_setup_idx: self.app.active_setup_idx,
+                            active_setup_idx: self.app.selection.active_setup_idx,
                             history: &mut self.app.history,
                             eval_ctx: &eval_ctx,
-                            pick_mode: &mut self.app.pick_mode,
-                            editing_shared_avoid_id: &mut self.app.editing_shared_avoid_id,
-                            focus: &mut self.app.inspector_focus,
+                            pick_mode: &mut self.app.selection.pick_mode,
+                            editing_shared_avoid_id: &mut self
+                                .app
+                                .selection
+                                .editing_shared_avoid_id,
+                            focus: &mut self.app.selection.inspector_focus,
                         },
                     );
                     if let Some(action) = act {
@@ -986,24 +1014,24 @@ impl PaneBehavior<'_> {
                                         "Removed unused tool '{}' from project.",
                                         tid.0
                                     ));
-                                    self.app.inspector_focus = if !self.app.project.tools.is_empty()
-                                    {
-                                        InspectorFocus::ProjectTool {
-                                            tool_idx: tool_idx
-                                                .min(self.app.project.tools.len() - 1),
-                                        }
-                                    } else {
-                                        InspectorFocus::Project
-                                    };
+                                    self.app.selection.inspector_focus =
+                                        if !self.app.project.tools.is_empty() {
+                                            InspectorFocus::ProjectTool {
+                                                tool_idx: tool_idx
+                                                    .min(self.app.project.tools.len() - 1),
+                                            }
+                                        } else {
+                                            InspectorFocus::Project
+                                        };
                                     frame_geo = None;
                                 }
                             }
                             ProjectToolInspectorAction::FocusOperation { setup_idx, op_idx } => {
-                                self.app.active_setup_idx = setup_idx;
-                                self.app.inspector_focus =
+                                self.app.selection.active_setup_idx = setup_idx;
+                                self.app.selection.inspector_focus =
                                     InspectorFocus::Operation { setup_idx, op_idx };
-                                self.app.op_tab = OperationTab::Tool;
-                                self.app.pick_mode = ViewportPickMode::InspectEntity;
+                                self.app.selection.op_tab = OperationTab::Tool;
+                                self.app.selection.pick_mode = ViewportPickMode::InspectEntity;
                                 frame_geo = None;
                             }
                         }
@@ -1015,10 +1043,11 @@ impl PaneBehavior<'_> {
                         frame_geo = None;
                     }
                 }
-            });
+            }
+        });
 
-        if self.app.cached_frame_geo.is_none() {
-            self.app.cached_frame_geo = frame_geo;
+        if self.app.workers.cached_frame_geo.is_none() {
+            self.app.workers.cached_frame_geo = frame_geo;
         }
     }
 
@@ -1028,10 +1057,10 @@ impl PaneBehavior<'_> {
             ui.horizontal(|ui| {
                 ui.heading("B-Rep Entity Inspector");
                 egui::ComboBox::from_id_salt("cad_pick_filter")
-                    .selected_text(self.app.pick_filter.label())
+                    .selected_text(self.app.selection.pick_filter.label())
                     .show_ui(ui, |ui| {
                         for f in PickFilter::ALL {
-                            ui.selectable_value(&mut self.app.pick_filter, f, f.label())
+                            ui.selectable_value(&mut self.app.selection.pick_filter, f, f.label())
                                 .on_hover_text(format!("Restrict 3D inspection picking to {}", f.label()));
                         }
                     })
@@ -1040,7 +1069,7 @@ impl PaneBehavior<'_> {
             });
             ui.separator();
 
-            if let Some(m) = &self.app.model
+            if let Some(m) = &self.app.assets.model
                 && !m.doc.meshes.is_empty()
                 && m.doc.bodies.is_empty()
             {
@@ -1091,7 +1120,7 @@ impl PaneBehavior<'_> {
                 return;
             }
 
-            match (&self.app.model, &self.app.highlight.selected) {
+            match (&self.app.assets.model, &self.app.highlight.selected) {
                 (Some(m), Some(PickTarget::Face(fid))) => {
                     if let Some(face) = m.doc.face(*fid) {
                         ui.strong(format!("Face #{} — {}", fid.0, face.surface.short_label()));
@@ -1190,34 +1219,34 @@ impl PaneBehavior<'_> {
 
             let mut ctx = self.app.eval_context();
             ui.label("Tool Diameter (`tool_d`):");
-            if self.app.wb_tool_dia.show(ui, "wb_tool_dia", &ctx) {
+            if self.app.workbench.wb_tool_dia.show(ui, "wb_tool_dia", &ctx) {
                 self.app.refresh_dependent_expressions();
                 ctx = self.app.eval_context();
             }
             ui.add_space(4.0);
             ui.label("Stepover (`ae`):");
-            let _ = self.app.wb_stepover.show(ui, "wb_stepover", &ctx);
+            let _ = self.app.workbench.wb_stepover.show(ui, "wb_stepover", &ctx);
             ui.add_space(4.0);
             ui.label("Clearance Height (`Z`):");
-            let _ = self.app.wb_clearance_z.show(ui, "wb_clearance_z", &ctx);
+            let _ = self.app.workbench.wb_clearance_z.show(ui, "wb_clearance_z", &ctx);
         });
     }
 
     fn ui_sketch_inspector(&mut self, ui: &mut egui::Ui, sketch_idx: usize) -> bool {
         let eval_ctx = self.app.eval_context();
-        let has_cad_model = self.app.model.is_some();
+        let has_cad_model = self.app.assets.model.is_some();
         let proj_path = self.app.virtual_project_file_path();
         let act = show_sketch_inspector(
             ui,
             SketchInspectorCtx {
                 project: &mut self.app.project,
                 sketch_idx,
-                active_setup_idx: self.app.active_setup_idx,
-                selected_entity_idx: &mut self.app.selected_sketch_entity_idx,
-                snap_grid_mm: &mut self.app.sketch_snap_grid_mm,
-                author_start_xy: &mut self.app.sketch_author_start_xy,
+                active_setup_idx: self.app.selection.active_setup_idx,
+                selected_entity_idx: &mut self.app.selection.selected_sketch_entity_idx,
+                snap_grid_mm: &mut self.app.selection.sketch_snap_grid_mm,
+                author_start_xy: &mut self.app.selection.sketch_author_start_xy,
                 history: &mut self.app.history,
-                pick_mode: &mut self.app.pick_mode,
+                pick_mode: &mut self.app.selection.pick_mode,
                 eval_ctx: &eval_ctx,
                 has_cad_model,
                 project_file: proj_path.as_deref(),
@@ -1227,19 +1256,20 @@ impl PaneBehavior<'_> {
         if let Some(action) = act {
             match action {
                 SketchInspectorAction::LookAtSketch(idx) => {
-                    self.app.cached_frame_geo = None;
+                    self.app.workers.cached_frame_geo = None;
                     invalidated = true;
                     self.app.align_camera_to_sketch(idx);
                 }
                 SketchInspectorAction::InvalidateFrameCache => {
-                    self.app.cached_frame_geo = None;
+                    self.app.workers.cached_frame_geo = None;
                     invalidated = true;
                 }
                 SketchInspectorAction::FocusOperation { setup_idx, op_idx } => {
-                    self.app.cached_frame_geo = None;
+                    self.app.workers.cached_frame_geo = None;
                     invalidated = true;
-                    self.app.inspector_focus = InspectorFocus::Operation { setup_idx, op_idx };
-                    self.app.op_tab = OperationTab::Geometry;
+                    self.app.selection.inspector_focus =
+                        InspectorFocus::Operation { setup_idx, op_idx };
+                    self.app.selection.op_tab = OperationTab::Geometry;
                 }
             }
         }
@@ -1254,15 +1284,16 @@ impl PaneBehavior<'_> {
             let cad_rev = eff_cad.as_ref().map_or(0, |(_, r)| *r);
             let proj_dir = self
                 .app
+                .session
                 .project_file_path
                 .as_deref()
                 .and_then(Path::parent)
-                .or(self.app.bundle_extract_dir.as_deref());
+                .or(self.app.session.bundle_extract_dir.as_deref());
             pending_action = self.app.sim_panel.show_ui(
                 ui,
                 SimPanelCtx {
                     project: &self.app.project,
-                    setup_idx: self.app.active_setup_idx,
+                    setup_idx: self.app.selection.active_setup_idx,
                     cad_doc,
                     cad_revision: cad_rev,
                     cache: &self.app.toolpath_cache,
@@ -1304,7 +1335,7 @@ impl PaneBehavior<'_> {
                 GCodePanelCtx {
                     project: &mut self.app.project,
                     history: &mut self.app.history,
-                    setup_idx: self.app.active_setup_idx,
+                    setup_idx: self.app.selection.active_setup_idx,
                     cad_doc,
                     cad_revision: cad_rev,
                     cache: &self.app.toolpath_cache,
@@ -1333,13 +1364,13 @@ impl PaneBehavior<'_> {
     fn ui_diagnostics(&mut self, ui: &mut egui::Ui) {
         let mut diag_action: Option<DiagnosticsPanelAction> = None;
         let active_machine = self.app.active_machine().cloned();
-        let loaded_cad = self.app.model.as_ref().map(|m| m.doc.as_ref());
+        let loaded_cad = self.app.assets.model.as_ref().map(|m| m.doc.as_ref());
         egui::Frame::NONE.inner_margin(6.0).show(ui, |ui| {
             let cad_rev = self.app.effective_cad_arc().map_or(0, |(_, r)| r);
             diag_action = show_diagnostics_panel(
                 ui,
                 &self.app.project,
-                self.app.active_setup_idx,
+                self.app.selection.active_setup_idx,
                 &self.app.global_tools,
                 &self.app.toolpath_cache,
                 cad_rev,
@@ -1355,11 +1386,12 @@ impl PaneBehavior<'_> {
                     self.app.jump_to_sim_diagnostic(&diag);
                 }
                 DiagnosticsPanelAction::FocusOperation { setup_idx, op_idx } => {
-                    self.app.active_setup_idx = setup_idx;
-                    self.app.inspector_focus = InspectorFocus::Operation { setup_idx, op_idx };
-                    self.app.op_tab = OperationTab::Tool;
-                    self.app.pick_mode = ViewportPickMode::InspectEntity;
-                    self.app.cached_frame_geo = None;
+                    self.app.selection.active_setup_idx = setup_idx;
+                    self.app.selection.inspector_focus =
+                        InspectorFocus::Operation { setup_idx, op_idx };
+                    self.app.selection.op_tab = OperationTab::Tool;
+                    self.app.selection.pick_mode = ViewportPickMode::InspectEntity;
+                    self.app.workers.cached_frame_geo = None;
                 }
                 DiagnosticsPanelAction::ApplyMachinabilityFix {
                     setup_idx,
@@ -1388,529 +1420,11 @@ impl PaneBehavior<'_> {
                             self.app
                                 .logs
                                 .push(format!("Applied safe fix to '{op_name}': {fix_desc}."));
-                            self.app.cached_frame_geo = None;
+                            self.app.workers.cached_frame_geo = None;
                         }
                     }
                 }
             }
-        }
-    }
-}
-
-impl ChipCutterApp {
-    pub(crate) fn handle_self_test(&mut self, ctx: &egui::Context) {
-        let is_busy = self.dispatcher.is_busy()
-            || self.sim_panel.is_busy()
-            || self.sim_panel.is_remeshing()
-            || self.reach_in_flight_key.is_some();
-        let has_geo = self.has_geometry();
-        let ready = has_geo
-            || self.modals.welcome.open
-            || self.modals.sample_gallery.open
-            || self.modals.tool_library.open
-            || self.modals.machine_manager.open
-            || self.modals.post_profile_inspector.open
-            || self.modals.command_palette.open
-            || self.modals.shortcut_cheatsheet.open;
-        let Some(st) = &mut self.self_test else {
-            if is_busy {
-                ctx.request_repaint();
-            }
-            return;
-        };
-        if self.loading_in_flight || is_busy {
-            ctx.request_repaint();
-            return;
-        }
-        if !ready && st.idle_wait_frames < 8 {
-            st.idle_wait_frames += 1;
-            ctx.request_repaint();
-            return;
-        }
-        if st.capture.auto_generate && !st.generate_triggered && has_geo {
-            st.generate_triggered = true;
-            if let Some(si) = st.capture.setup_idx
-                && si < self.project.setups.len()
-            {
-                self.active_setup_idx = si;
-                self.inspector_focus = InspectorFocus::Setup { setup_idx: si };
-                self.cached_frame_geo = None;
-            }
-            if let Some(eng) = st.capture.sim_engine {
-                self.sim_panel.engine = eng;
-            }
-            if let Some(backend) = st.capture.sim_backend {
-                self.sim_panel.backend_choice = backend;
-            }
-            if let Some(res) = st.capture.sim_resolution {
-                self.sim_panel.resolution = res;
-            }
-            self.sim_panel.show_error_heatmap = st.capture.sim_heatmap;
-            self.auto_sim_after_gen = true;
-            self.trigger_generate_dirty(None, None);
-            ctx.request_repaint();
-            return;
-        }
-        let capture_to_apply = if !st.capture_applied {
-            st.capture_applied = true;
-            Some(st.capture.clone())
-        } else {
-            None
-        };
-        if let Some(capture) = capture_to_apply {
-            let needs_resim = self.apply_capture_spec(&capture);
-            if needs_resim {
-                if let Some(st) = &mut self.self_test {
-                    st.capture_applied = false;
-                }
-                self.trigger_active_setup_simulation(ctx);
-            }
-            ctx.request_repaint();
-            return;
-        }
-        let Some(st) = &mut self.self_test else {
-            return;
-        };
-        st.frames_rendered += 1;
-        if st.frames_rendered < 6 {
-            ctx.request_repaint();
-            return;
-        }
-        if !st.requested {
-            st.requested = true;
-            let out_path = st.screenshot_path.clone();
-            let thumb_path = st.capture.thumb_path.clone();
-            let ctx_clone = ctx.clone();
-            ctx.request_screenshot(move |image| {
-                let w = image.width() as u32;
-                let h = image.height() as u32;
-                let rgba: Vec<u8> = image
-                    .pixels
-                    .iter()
-                    .flat_map(|c| [c.r(), c.g(), c.b(), c.a()])
-                    .collect();
-                if let Some(parent) = out_path.parent()
-                    && !parent.as_os_str().is_empty()
-                {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                if let Err(e) = image::save_buffer(&out_path, &rgba, w, h, image::ColorType::Rgba8)
-                {
-                    tracing::error!("failed to save screenshot: {e}");
-                }
-                if let Some(t_path) = thumb_path
-                    && let Some(buf) = image::RgbaImage::from_raw(w, h, rgba)
-                {
-                    if let Some(parent) = t_path.parent()
-                        && !parent.as_os_str().is_empty()
-                    {
-                        let _ = std::fs::create_dir_all(parent);
-                    }
-                    let tw = 480_u32.min(w.max(1));
-                    let th = ((u64::from(h) * u64::from(tw)) / u64::from(w.max(1))).max(1) as u32;
-                    let resized = image::imageops::resize(
-                        &buf,
-                        tw,
-                        th,
-                        image::imageops::FilterType::Lanczos3,
-                    );
-                    if let Err(e) = resized.save(&t_path) {
-                        tracing::error!("failed to save thumbnail: {e}");
-                    }
-                }
-                ctx_clone.send_viewport_cmd(egui::ViewportCommand::Close);
-                ctx_clone.request_repaint();
-            });
-            ctx.request_repaint();
-        } else {
-            ctx.request_repaint();
-        }
-    }
-
-    fn apply_capture_spec(&mut self, capture: &crate::capture::CaptureSpec) -> bool {
-        use crate::capture::{CaptureFocus, CaptureModal, CapturePane, CaptureView};
-        let mut needs_resim = false;
-        let prev_setup_idx = self.active_setup_idx;
-
-        if let Some(si) = capture.setup_idx
-            && si < self.project.setups.len()
-        {
-            self.active_setup_idx = si;
-            if capture.focus.is_none() {
-                self.inspector_focus = InspectorFocus::Setup { setup_idx: si };
-            }
-            self.cached_frame_geo = None;
-        }
-
-        if let Some(focus) = capture.focus {
-            match focus {
-                CaptureFocus::Project => {
-                    self.inspector_focus = InspectorFocus::Project;
-                    self.cached_frame_geo = None;
-                }
-                CaptureFocus::Setup { setup_idx, tab } => {
-                    if setup_idx < self.project.setups.len() {
-                        self.active_setup_idx = setup_idx;
-                        self.inspector_focus = InspectorFocus::Setup { setup_idx };
-                        self.setup_tab = tab;
-                        self.cached_frame_geo = None;
-                    }
-                }
-                CaptureFocus::Operation {
-                    setup_idx,
-                    op_idx,
-                    tab,
-                } => {
-                    if let Some(setup) = self.project.setups.get(setup_idx)
-                        && op_idx < setup.operations.len()
-                    {
-                        self.active_setup_idx = setup_idx;
-                        self.inspector_focus = InspectorFocus::Operation { setup_idx, op_idx };
-                        self.op_tab = tab;
-                        self.cached_frame_geo = None;
-                    }
-                }
-                CaptureFocus::Sketch { sketch_idx } => {
-                    if sketch_idx < self.project.sketches.len() {
-                        self.inspector_focus = InspectorFocus::Sketch { sketch_idx };
-                        self.cached_frame_geo = None;
-                    }
-                }
-                CaptureFocus::Model { model_idx } => {
-                    if model_idx < self.project.models.len() {
-                        self.inspector_focus = InspectorFocus::Model { model_idx };
-                        self.cached_frame_geo = None;
-                    }
-                }
-            }
-        }
-
-        let wants_sim = capture.auto_generate
-            || capture.sim_after_op.is_some()
-            || capture.sim_progress.is_some();
-        let sim_matches_setup = self.sim_panel.active_result.is_some()
-            && self.sim_panel.active_setup_idx == self.active_setup_idx;
-        if (self.active_setup_idx != prev_setup_idx && self.sim_panel.active_result.is_some())
-            || (wants_sim && !sim_matches_setup)
-        {
-            needs_resim = true;
-        }
-        if capture.isolate_op {
-            self.show_all_setup_toolpaths = false;
-        }
-        if let Some(z_planes) = capture.show_z_planes {
-            self.show_z_planes = z_planes;
-        }
-        if let Some(dots) = capture.show_27pt_dots {
-            self.show_27pt_dots = dots;
-        }
-        if let Some(show_fix) = capture.show_fixtures {
-            self.highlight.show_fixtures = show_fix;
-        }
-        if let Some(ghost) = capture.ghost_part {
-            self.highlight.ghost_part = ghost;
-        }
-        if capture.reach_heatmap {
-            self.highlight.show_reach_heatmap = true;
-        }
-        if capture.apply_safe_fixes
-            && let InspectorFocus::Operation { setup_idx, op_idx } = self.inspector_focus
-        {
-            let active_machine = self.active_machine().cloned();
-            let rs_opt = self
-                .ensure_frame_geo_cached()
-                .resolved_setup
-                .as_ref()
-                .and_then(|r| r.as_ref().ok())
-                .cloned();
-            for _ in 0..4 {
-                let cad_ref = self.model.as_ref().map(|m| m.doc.as_ref());
-                let fix_opt = evaluate_operation_machinability(
-                    &self.project,
-                    setup_idx,
-                    op_idx,
-                    &self.global_tools,
-                    active_machine.as_ref(),
-                    rs_opt.as_ref(),
-                    cad_ref,
-                )
-                .and_then(|rep| {
-                    rep.primary_fixable_finding()
-                        .and_then(|f| f.suggested_fix.clone())
-                });
-                let Some(fix) = fix_opt else {
-                    break;
-                };
-                if !apply_machinability_fix(
-                    &mut self.project.setups[setup_idx].operations[op_idx],
-                    &fix,
-                ) {
-                    break;
-                }
-                mark_ops_dirty_with_rest(&mut self.project.setups[setup_idx], &[op_idx]);
-            }
-            self.cached_frame_geo = None;
-        }
-        if capture.measure_demo {
-            self.seed_capture_measure_demo();
-        }
-        if let Some(show_stock) = capture.show_sim_stock {
-            self.sim_panel.show_machined_stock = show_stock;
-        }
-        if let Some(show_cutter) = capture.show_sim_cutter {
-            self.sim_panel.show_cutter_assembly = show_cutter;
-        }
-        self.sim_panel.show_error_heatmap = capture.sim_heatmap;
-        if let Some(eng) = capture.sim_engine
-            && self.sim_panel.engine != eng
-        {
-            self.sim_panel.engine = eng;
-            if self.sim_panel.active_result.is_some() {
-                needs_resim = true;
-            }
-        }
-        if let Some(backend) = capture.sim_backend
-            && self.sim_panel.backend_choice != backend
-        {
-            self.sim_panel.backend_choice = backend;
-            if self.sim_panel.active_result.is_some() {
-                needs_resim = true;
-            }
-        }
-        if let Some(sim_res) = capture.sim_resolution
-            && self.sim_panel.resolution != sim_res
-        {
-            self.sim_panel.resolution = sim_res;
-            if self.sim_panel.active_result.is_some() {
-                needs_resim = true;
-            }
-        }
-        if let Some(res) = &self.sim_panel.active_result {
-            if let Some(eng) = capture.sim_engine
-                && res.engine != eng
-            {
-                needs_resim = true;
-            }
-            if let Some(sim_res) = capture.sim_resolution
-                && res.resolution != sim_res
-            {
-                needs_resim = true;
-            }
-            if let Some(backend) = capture.sim_backend {
-                let want_gpu = backend != chip_sim::SimComputeBackendChoice::Cpu
-                    && self.sim_panel.has_gpu_context();
-                if res.active_backend.is_gpu != want_gpu {
-                    needs_resim = true;
-                }
-            }
-            let op_id_for_index = capture.sim_after_op.and_then(|oi| {
-                self.project
-                    .setups
-                    .get(self.active_setup_idx)
-                    .and_then(|s| s.operations.get(oi))
-                    .map(|op| op.id.as_str())
-            });
-            self.sim_panel.current_time_sec =
-                capture.resolve_sim_timestamp(&res.timeline, op_id_for_index);
-            self.sim_panel.is_playing = false;
-        }
-        if let Some(post_id) = &capture.post_profile
-            && let Some(setup) = self.project.setups.get_mut(self.active_setup_idx)
-            && !setup.post_profile.eq_ignore_ascii_case(post_id)
-        {
-            setup.post_profile = post_id.clone();
-            self.gcode_panel.invalidate_preview();
-            needs_resim = self.sim_panel.active_result.is_some();
-        }
-
-        if let Some(pane) = capture.pane {
-            crate::layout::focus_workspace_pane(&mut self.tree, pane.to_workspace_pane());
-            if pane == CapturePane::GCode {
-                let proj_dir = self
-                    .project_file_path
-                    .as_deref()
-                    .and_then(std::path::Path::parent)
-                    .or(self.bundle_extract_dir.as_deref());
-                self.gcode_panel.ensure_profiles_loaded(proj_dir);
-            }
-        }
-
-        if let Some(modal) = capture.modal {
-            self.modals.welcome.open = modal == CaptureModal::Welcome;
-            self.modals.sample_gallery.open = modal == CaptureModal::SampleGallery;
-            self.modals.tool_library.open = modal == CaptureModal::ToolLibrary;
-            if modal == CaptureModal::ToolLibrary
-                && let InspectorFocus::Operation { setup_idx, op_idx } = self.inspector_focus
-                && let Some(op_tool_id) = self
-                    .project
-                    .setups
-                    .get(setup_idx)
-                    .and_then(|s| s.operations.get(op_idx))
-                    .and_then(|op| op.tool_id.as_ref())
-                    .cloned()
-            {
-                if !self.global_tools.tools.iter().any(|t| t.id == op_tool_id) {
-                    for pt in &self.project.tools {
-                        if !self.global_tools.tools.iter().any(|t| t.id == pt.id) {
-                            self.global_tools.tools.push(pt.clone());
-                        }
-                    }
-                }
-                if let Some(idx) = self
-                    .global_tools
-                    .tools
-                    .iter()
-                    .position(|t| t.id == op_tool_id)
-                {
-                    self.modals.tool_library.selected_tool_idx = idx;
-                    self.modals.tool_library.selected_preset_idx = 0;
-                    self.modals.tool_library.scroll_to_selected = true;
-                }
-            }
-            if modal == CaptureModal::Machines {
-                let mid = self.project.effective_machine_id().to_string();
-                self.modals
-                    .machine_manager
-                    .open_selecting(&self.machines, &mid);
-            } else {
-                self.modals.machine_manager.open = false;
-            }
-            if modal == CaptureModal::FlipJigWizard {
-                self.modals
-                    .flip_jig_wizard
-                    .open_for_setup(self.active_setup_idx);
-            } else {
-                self.modals.flip_jig_wizard.open = false;
-            }
-            if modal == CaptureModal::SoftJawWizard {
-                self.modals
-                    .soft_jaw_wizard
-                    .open_for_setup(self.active_setup_idx);
-            } else {
-                self.modals.soft_jaw_wizard.open = false;
-            }
-            self.modals.shortcut_cheatsheet.open = modal == CaptureModal::ShortcutCheatsheet;
-            self.modals.about.open = modal == CaptureModal::About;
-        }
-
-        if let Some(view) = capture.view {
-            match view {
-                CaptureView::Standard(v) => {
-                    self.camera.set_standard_view(v);
-                    self.fit_scene_to_viewport();
-                }
-                CaptureView::SetupTop => self.align_camera_to_active_setup(),
-                CaptureView::ActiveSketch => {
-                    let sk_idx = match self.inspector_focus {
-                        InspectorFocus::Sketch { sketch_idx } => sketch_idx,
-                        _ => 0,
-                    };
-                    self.align_camera_to_sketch(sk_idx);
-                }
-            }
-        }
-        needs_resim
-    }
-
-    fn seed_capture_measure_demo(&mut self) {
-        self.pick_mode = ViewportPickMode::Measure;
-        self.measure_state.reset_all();
-        let rs_opt = self
-            .ensure_frame_geo_cached()
-            .resolved_setup
-            .as_ref()
-            .and_then(|r| r.as_ref().ok())
-            .cloned();
-        let (Some(model), Some(rs)) = (&self.model, rs_opt) else {
-            return;
-        };
-        let doc = &model.doc;
-
-        // Prefer two distinct internal cylindrical holes (center-to-center hole pitch)
-        let mut holes: Vec<MeasureSnapTarget> = Vec::new();
-        for face in &doc.faces {
-            if let SurfaceKind::Cylinder {
-                axis_origin_mm,
-                axis_dir,
-                radius_mm,
-                is_internal: true,
-            } = face.surface
-            {
-                let origin_wcs = rs.frame.world_to_local_point(axis_origin_mm);
-                let dir_wcs = rs.frame.world_to_local_dir(axis_dir).normalize_or_zero();
-                let dup = holes.iter().any(|h| match h {
-                    MeasureSnapTarget::BRepCylindricalFace {
-                        axis_origin_wcs, ..
-                    } => {
-                        (axis_origin_wcs.x - origin_wcs.x).hypot(axis_origin_wcs.y - origin_wcs.y)
-                            < 0.25
-                    }
-                    _ => false,
-                });
-                if !dup {
-                    let bmin = rs.frame.world_to_local_point(face.aabb_mm.min);
-                    let bmax = rs.frame.world_to_local_point(face.aabb_mm.max);
-                    let top_z = bmin.z.max(bmax.z);
-                    let bot_z = bmin.z.min(bmax.z);
-                    holes.push(MeasureSnapTarget::BRepCylindricalFace {
-                        face_id: face.id,
-                        axis_origin_wcs: chip_math::DVec3::new(origin_wcs.x, origin_wcs.y, top_z),
-                        axis_dir_wcs: dir_wcs,
-                        diameter_mm: radius_mm * 2.0,
-                        depth_mm: (top_z - bot_z).abs(),
-                        is_internal: true,
-                        top_z_wcs: top_z,
-                        bottom_z_wcs: bot_z,
-                    });
-                }
-            }
-        }
-        if holes.len() >= 2 {
-            let mut best = (0usize, 1usize, -1.0_f64);
-            for i in 0..holes.len() {
-                for j in (i + 1)..holes.len() {
-                    let d = holes[i].anchor_wcs().distance(holes[j].anchor_wcs());
-                    if d > best.2 {
-                        best = (i, j, d);
-                    }
-                }
-            }
-            self.measure_state.on_click_target(holes[best.0].clone());
-            self.measure_state.on_click_target(holes[best.1].clone());
-            self.highlight.measure_state = Some(self.measure_state.clone());
-            return;
-        }
-
-        // Fallback: top horizontal planar face vs deepest horizontal pocket floor
-        let mut planes: Vec<MeasureSnapTarget> = Vec::new();
-        for face in &doc.faces {
-            if let SurfaceKind::Plane { origin_mm, normal } = face.surface {
-                let n_wcs = rs.frame.world_to_local_dir(normal).normalize_or_zero();
-                if n_wcs.z > 0.99 {
-                    let c_world = 0.5 * (face.aabb_mm.min + face.aabb_mm.max);
-                    let pt_wcs = rs.frame.world_to_local_point(c_world);
-                    let z_wcs = rs.frame.world_to_local_point(origin_mm).z;
-                    planes.push(MeasureSnapTarget::BRepPlanarFace {
-                        face_id: face.id,
-                        point_wcs: chip_math::DVec3::new(pt_wcs.x, pt_wcs.y, z_wcs),
-                        normal_wcs: n_wcs,
-                        z_wcs,
-                        area_mm2: face.area_mm2,
-                    });
-                }
-            }
-        }
-        planes.sort_by(|a, b| {
-            let za = a.anchor_wcs().z;
-            let zb = b.anchor_wcs().z;
-            zb.total_cmp(&za)
-        });
-        if let (Some(top), Some(bot)) = (planes.first(), planes.last())
-            && (top.anchor_wcs().z - bot.anchor_wcs().z).abs() > 0.1
-        {
-            self.measure_state.on_click_target(top.clone());
-            self.measure_state.on_click_target(bot.clone());
-            self.highlight.measure_state = Some(self.measure_state.clone());
         }
     }
 }

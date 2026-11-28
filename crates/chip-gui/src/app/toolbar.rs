@@ -70,7 +70,7 @@ impl ChipCutterApp {
                     {
                         self.modals.vector_import.open = true;
                     }
-                    if self.model.is_some()
+                    if self.assets.model.is_some()
                         && icon_button(
                             ui,
                             IconKind::Reload,
@@ -98,7 +98,7 @@ impl ChipCutterApp {
                     let active_setup_name = self
                         .project
                         .setups
-                        .get(self.active_setup_idx)
+                        .get(self.selection.active_setup_idx)
                         .map_or("Active Setup", |s| s.name.as_str())
                         .to_string();
                     if icon_button(
@@ -199,7 +199,7 @@ impl ChipCutterApp {
 
                     ui.separator();
 
-                    if self.dispatcher.is_busy() {
+                    if self.workers.dispatcher.is_busy() {
                         if icon_button(
                             ui,
                             IconKind::CancelStop,
@@ -208,8 +208,8 @@ impl ChipCutterApp {
                         )
                         .clicked()
                         {
-                            let elapsed = self.dispatcher.batch_elapsed();
-                            let n = self.dispatcher.cancel_all();
+                            let elapsed = self.workers.dispatcher.batch_elapsed();
+                            let n = self.workers.dispatcher.cancel_all();
                             if let Some(d) = elapsed {
                                 self.logs.push(format!(
                                     "Cancelled {n} in-flight generation job(s) after {}.",
@@ -228,7 +228,7 @@ impl ChipCutterApp {
                     )
                     .clicked()
                     {
-                        self.trigger_generate_dirty(Some(self.active_setup_idx), None);
+                        self.trigger_generate_dirty(Some(self.selection.active_setup_idx), None);
                     }
 
                     if self.sim_panel.is_busy() {
@@ -273,7 +273,7 @@ impl ChipCutterApp {
                     }
 
                     let job_progress = resolve_toolbar_job_progress(
-                        self.dispatcher.batch_progress(),
+                        self.workers.dispatcher.batch_progress(),
                         self.sim_panel.in_flight_progress(),
                     );
                     if toolbar_progress_bar(ui, job_progress.as_ref()).clicked()
@@ -328,7 +328,7 @@ impl ChipCutterApp {
 
     fn draw_status_banners(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let tok = ThemeTokens::for_theme(self.theme);
-        if self.external_step_modified {
+        if self.session.external_step_modified {
             egui::Panel::top("chip_external_step_banner")
                 .frame(
                     egui::Frame::NONE
@@ -355,13 +355,13 @@ impl ChipCutterApp {
                             .on_hover_text("Hide this file-change notification without reloading")
                             .clicked()
                         {
-                            self.external_step_modified = false;
+                            self.session.external_step_modified = false;
                         }
                     });
                 });
         }
 
-        if let Some((msg, has_warn)) = self.last_reload_banner.clone() {
+        if let Some((msg, has_warn)) = self.session.last_reload_banner.clone() {
             let (bg, border, fg, badge) = if has_warn {
                 (
                     tok.warn_bg,
@@ -393,7 +393,7 @@ impl ChipCutterApp {
                             .on_hover_text("Recompute all toolpaths invalidated by the CAD reload and refresh simulation")
                             .clicked()
                         {
-                            self.auto_sim_after_gen = true;
+                            self.overlay_prefs.auto_sim_after_gen = true;
                             self.trigger_generate_dirty(None, None);
                         }
                         if ui
@@ -401,7 +401,7 @@ impl ChipCutterApp {
                             .on_hover_text("Close this reload summary banner")
                             .clicked()
                         {
-                            self.last_reload_banner = None;
+                            self.session.last_reload_banner = None;
                         }
                     });
                 });

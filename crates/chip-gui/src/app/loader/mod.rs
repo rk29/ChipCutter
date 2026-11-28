@@ -55,15 +55,15 @@ pub(crate) enum LoadJobResult {
 
 impl ChipCutterApp {
     pub(crate) fn begin_model_load_generation(&mut self) -> u64 {
-        self.load_generation = self.load_generation.wrapping_add(1);
-        self.loading_in_flight = true;
-        self.load_generation
+        self.workers.load_generation = self.workers.load_generation.wrapping_add(1);
+        self.workers.loading_in_flight = true;
+        self.workers.load_generation
     }
 
     pub(crate) fn cancel_in_flight_model_loads(&mut self) {
-        self.load_generation = self.load_generation.wrapping_add(1);
-        self.loading_in_flight = false;
-        while self.job_rx.try_recv().is_ok() {}
+        self.workers.load_generation = self.workers.load_generation.wrapping_add(1);
+        self.workers.loading_in_flight = false;
+        while self.workers.job_rx.try_recv().is_ok() {}
     }
 
     /// Cancels all background work and resets every piece of project-scoped runtime state
@@ -76,37 +76,37 @@ impl ChipCutterApp {
         new_bundle_extract_dir: Option<PathBuf>,
     ) {
         self.cancel_in_flight_model_loads();
-        self.dispatcher.reset();
+        self.workers.dispatcher.reset();
         self.toolpath_cache.clear();
         self.sim_panel.reset_for_new_project();
         self.gcode_panel.reset_for_project(project_dir);
-        self.auto_sim_after_gen = false;
+        self.overlay_prefs.auto_sim_after_gen = false;
         self.clear_bundle_extract_dir();
-        self.bundle_extract_dir = new_bundle_extract_dir;
+        self.session.bundle_extract_dir = new_bundle_extract_dir;
         self.history.clear();
-        self.clean_undo_len = Some(0);
+        self.session.clean_undo_len = Some(0);
         self.modals.show_unsaved_close = false;
-        self.allow_close_without_prompt = false;
-        self.external_step_modified = false;
-        self.last_reload_banner = None;
-        self.model = None;
-        self.fixture_models.clear();
-        self.fixture_models_revision = self.fixture_models_revision.wrapping_add(1);
-        self.selected_fixture_idx = None;
-        self.cached_frame_geo = None;
-        self.boundary_preview_cache.clear();
-        self.active_setup_idx = 0;
-        self.hidden_operation_ids.clear();
-        self.inspector_focus = InspectorFocus::Setup { setup_idx: 0 };
-        self.setup_tab = SetupTab::Wcs;
-        self.op_tab = OperationTab::Passes;
-        self.pick_mode = ViewportPickMode::InspectEntity;
-        self.selected_sketch_entity_idx = None;
-        self.sketch_author_start_xy = None;
-        self.measure_state.reset_all();
-        self.reach_cache_key = None;
-        self.reach_in_flight_key = None;
-        self.reach_result = None;
+        self.session.allow_close_without_prompt = false;
+        self.session.external_step_modified = false;
+        self.session.last_reload_banner = None;
+        self.assets.model = None;
+        self.assets.fixture_models.clear();
+        self.assets.fixture_models_revision = self.assets.fixture_models_revision.wrapping_add(1);
+        self.selection.selected_fixture_idx = None;
+        self.workers.cached_frame_geo = None;
+        self.workers.boundary_preview_cache.clear();
+        self.selection.active_setup_idx = 0;
+        self.overlay_prefs.hidden_operation_ids.clear();
+        self.selection.inspector_focus = InspectorFocus::Setup { setup_idx: 0 };
+        self.selection.setup_tab = SetupTab::Wcs;
+        self.selection.op_tab = OperationTab::Passes;
+        self.selection.pick_mode = ViewportPickMode::InspectEntity;
+        self.selection.selected_sketch_entity_idx = None;
+        self.selection.sketch_author_start_xy = None;
+        self.selection.measure_state.reset_all();
+        self.workers.reach_cache_key = None;
+        self.workers.reach_in_flight_key = None;
+        self.workers.reach_result = None;
         self.highlight.clear_project_scene_state();
         self.modals.mesh_import.open = false;
         self.modals.vector_import.open = false;
@@ -139,7 +139,7 @@ impl ChipCutterApp {
     }
 
     pub(crate) fn save_project_dialog(&mut self) -> bool {
-        if let Some(existing) = self.project_file_path.clone() {
+        if let Some(existing) = self.session.project_file_path.clone() {
             self.save_project_to_disk(&existing);
         } else if let Some(path) = rfd::FileDialog::new()
             .set_file_name("job.chip.toml")
@@ -155,7 +155,7 @@ impl ChipCutterApp {
             Ok(doc) => {
                 self.prepare_for_project_replacement(path.parent(), None);
                 self.project = doc;
-                self.project_file_path = Some(path.to_path_buf());
+                self.session.project_file_path = Some(path.to_path_buf());
                 self.record_recent_file(path);
                 self.sync_active_machine_tools();
                 self.refresh_dependent_expressions();
@@ -199,7 +199,7 @@ impl ChipCutterApp {
             Ok(unpacked) => {
                 self.prepare_for_project_replacement(Some(&extract_dir), Some(extract_dir.clone()));
                 self.project = unpacked.project;
-                self.project_file_path = None;
+                self.session.project_file_path = None;
                 self.record_recent_file(archive_path);
                 self.sync_active_machine_tools();
                 self.refresh_dependent_expressions();
@@ -251,9 +251,9 @@ impl ChipCutterApp {
         }
         match self.project.save_to_path(path) {
             Ok(()) => {
-                self.project_file_path = Some(path.to_path_buf());
+                self.session.project_file_path = Some(path.to_path_buf());
                 self.record_recent_file(path);
-                self.clean_undo_len = Some(self.history.undo_len());
+                self.session.clean_undo_len = Some(self.history.undo_len());
                 self.logs
                     .push(format!("Saved project to '{}'.", path.display()));
             }
@@ -266,6 +266,7 @@ impl ChipCutterApp {
 
     pub(crate) fn export_chipz_dialog(&mut self) {
         let default_stem = self
+            .session
             .project_file_path
             .as_deref()
             .and_then(Path::file_stem)
@@ -281,15 +282,16 @@ impl ChipCutterApp {
         };
 
         let mut fallback: Vec<(&str, &[u8])> = Vec::new();
-        if let (Some(m), Some(first)) = (&self.model, self.project.primary_part_model()) {
+        if let (Some(m), Some(first)) = (&self.assets.model, self.project.primary_part_model()) {
             fallback.push((first.id.as_str(), m.raw_step_bytes.as_slice()));
             fallback.push((first.path.as_str(), m.raw_step_bytes.as_slice()));
         }
         let proj_dir = self
+            .session
             .project_file_path
             .as_deref()
             .and_then(Path::parent)
-            .or(self.bundle_extract_dir.as_deref());
+            .or(self.session.bundle_extract_dir.as_deref());
         let external_assets = external_or_suspicious_assets_referenced(&self.project, proj_dir);
         if !external_assets.is_empty() {
             let names: Vec<String> = external_assets
@@ -330,6 +332,7 @@ impl ChipCutterApp {
 
     pub(crate) fn reload_active_step_model(&mut self, egui_ctx: &egui::Context) {
         let disk_path = self
+            .assets
             .model
             .as_ref()
             .and_then(|m| m.source_path.clone())
@@ -399,7 +402,7 @@ impl ChipCutterApp {
             "Loading 3D model '{}' on background worker…",
             path.display()
         ));
-        let tx = self.job_tx.clone();
+        let tx = self.workers.job_tx.clone();
         rayon::spawn(move || {
             let t0 = Instant::now();
             let res = match std::fs::read(&path) {
@@ -445,7 +448,7 @@ impl ChipCutterApp {
         self.logs.push(format!(
             "Importing 3D mesh '{source_name}' on background worker…"
         ));
-        let tx = self.job_tx.clone();
+        let tx = self.workers.job_tx.clone();
         rayon::spawn(move || {
             let t0 = Instant::now();
             let mut res = parse_model_bytes_job(
@@ -480,7 +483,7 @@ impl ChipCutterApp {
         self.logs.push(format!(
             "Reloading 3D mesh '{source_name}' with import units '{unit_lbl}' on background worker..."
         ));
-        let tx = self.job_tx.clone();
+        let tx = self.workers.job_tx.clone();
         rayon::spawn(move || {
             let t0 = Instant::now();
             let res = parse_model_bytes_job(
@@ -498,15 +501,15 @@ impl ChipCutterApp {
     }
 
     pub(crate) fn poll_background_jobs(&mut self, egui_ctx: &egui::Context) {
-        while let Ok(msg) = self.job_rx.try_recv() {
+        while let Ok(msg) = self.workers.job_rx.try_recv() {
             let msg_gen = match &msg {
                 LoadJobResult::Loaded { generation, .. }
                 | LoadJobResult::Failed { generation, .. } => *generation,
             };
-            if !self.loading_in_flight || msg_gen != self.load_generation {
+            if !self.workers.loading_in_flight || msg_gen != self.workers.load_generation {
                 continue;
             }
-            self.loading_in_flight = false;
+            self.workers.loading_in_flight = false;
             match msg {
                 LoadJobResult::Loaded {
                     payload,
@@ -522,9 +525,11 @@ impl ChipCutterApp {
         }
 
         // Throttled (every 2s) external STEP modification check on disk (`09-persistence-cli.md` §1)
-        if !self.loading_in_flight && self.last_disk_check.elapsed().as_secs_f32() >= 2.0 {
-            self.last_disk_check = Instant::now();
-            if let (Some(m), Some(first)) = (&self.model, self.project.primary_part_model())
+        if !self.workers.loading_in_flight
+            && self.session.last_disk_check.elapsed().as_secs_f32() >= 2.0
+        {
+            self.session.last_disk_check = Instant::now();
+            if let (Some(m), Some(first)) = (&self.assets.model, self.project.primary_part_model())
                 && let Some(disk_path) = &m.source_path
                 && let Ok(meta) = std::fs::metadata(disk_path)
                 && meta.is_file()
@@ -532,33 +537,40 @@ impl ChipCutterApp {
                 && let Ok(bytes) = std::fs::read(disk_path)
             {
                 let disk_sha = compute_sha256_hex(&bytes);
-                self.external_step_modified = disk_sha != first.sha256;
+                self.session.external_step_modified = disk_sha != first.sha256;
             }
         }
 
         // Poll background toolpath generation worker events (`JobDispatcher`)
         if let Some((_, cad_rev)) = self.effective_cad_arc() {
-            self.dispatcher.cancel_stale_jobs(&self.project, cad_rev);
-            let gen_logs =
-                self.dispatcher
-                    .poll_events(&mut self.project, &mut self.toolpath_cache, cad_rev);
+            self.workers
+                .dispatcher
+                .cancel_stale_jobs(&self.project, cad_rev);
+            let gen_logs = self.workers.dispatcher.poll_events(
+                &mut self.project,
+                &mut self.toolpath_cache,
+                cad_rev,
+            );
             let had_gen_completion = !gen_logs.is_empty();
             self.logs.extend(gen_logs);
 
-            if self.auto_sim_after_gen && had_gen_completion && !self.dispatcher.is_busy() {
-                self.auto_sim_after_gen = false;
+            if self.overlay_prefs.auto_sim_after_gen
+                && had_gen_completion
+                && !self.workers.dispatcher.is_busy()
+            {
+                self.overlay_prefs.auto_sim_after_gen = false;
                 self.trigger_active_setup_simulation(egui_ctx);
             }
         }
 
         let _ = self.sim_panel.poll_worker(&mut self.logs);
 
-        while let Ok((key, res)) = self.reach_job_rx.try_recv() {
-            if self.reach_in_flight_key == Some(key) {
-                self.reach_in_flight_key = None;
+        while let Ok((key, res)) = self.workers.reach_job_rx.try_recv() {
+            if self.workers.reach_in_flight_key == Some(key) {
+                self.workers.reach_in_flight_key = None;
             }
-            self.reach_cache_key = Some(key);
-            self.reach_result = Some(res);
+            self.workers.reach_cache_key = Some(key);
+            self.workers.reach_result = Some(res);
             egui_ctx.request_repaint();
         }
     }
@@ -669,13 +681,13 @@ mod tests {
 
     fn wait_for_model_load(app: &mut ChipCutterApp, ctx: &egui::Context) {
         let deadline = Instant::now() + Duration::from_secs(15);
-        while app.loading_in_flight && Instant::now() < deadline {
+        while app.workers.loading_in_flight && Instant::now() < deadline {
             app.poll_background_jobs(ctx);
             std::thread::sleep(Duration::from_millis(5));
         }
         app.poll_background_jobs(ctx);
         assert!(
-            !app.loading_in_flight,
+            !app.workers.loading_in_flight,
             "background model load did not finish before timeout"
         );
     }
@@ -692,7 +704,12 @@ mod tests {
         );
         wait_for_model_load(app, ctx);
         assert_eq!(
-            app.model.as_ref().expect("STL should load").doc.source_name,
+            app.assets
+                .model
+                .as_ref()
+                .expect("STL should load")
+                .doc
+                .source_name,
             "previous_part.stl"
         );
 
@@ -711,11 +728,11 @@ mod tests {
             est_time_sec: 12.0,
             warnings: Vec::new(),
         });
-        app.auto_sim_after_gen = true;
+        app.overlay_prefs.auto_sim_after_gen = true;
 
         let tool = app.global_tools.tools[0].clone();
         app.project.ensure_tool_embedded(&tool);
-        let doc = Arc::clone(&app.model.as_ref().unwrap().doc);
+        let doc = Arc::clone(&app.assets.model.as_ref().unwrap().doc);
         let resolved = app.project.setups[0]
             .resolve(&doc, app.project.display_units)
             .unwrap();
@@ -761,7 +778,7 @@ mod tests {
         seed_active_stl_project_with_sim(&mut app, &ctx);
 
         // Queue a stale in-flight STL result from the previous generation to ensure it cannot resurrect.
-        let stale_gen = app.load_generation;
+        let stale_gen = app.workers.load_generation;
         let stale_stl = sample_sculpted_dome_stl_bytes();
         let stale_msg = parse_model_bytes_job(
             stale_gen,
@@ -781,12 +798,12 @@ mod tests {
         pure2d.save_to_path(&toml_path).unwrap();
 
         app.load_project_from_disk(&toml_path, ctx.clone());
-        let _ = app.job_tx.send(stale_msg);
+        let _ = app.workers.job_tx.send(stale_msg);
         app.poll_background_jobs(&ctx);
         app.sync_viewport_scene_state();
 
         assert!(
-            app.model.is_none(),
+            app.assets.model.is_none(),
             "previous STL model must be cleared when loading a Pure-2D .chip.toml"
         );
         assert_eq!(app.project.project_name, pure2d.project_name);
@@ -798,7 +815,7 @@ mod tests {
         assert!(app.highlight.hovered.is_none());
         assert!(app.gcode_panel.cached_files.is_empty());
         assert!(!app.history.can_undo());
-        assert!(!app.auto_sim_after_gen);
+        assert!(!app.overlay_prefs.auto_sim_after_gen);
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -824,7 +841,7 @@ mod tests {
 
         app.load_project_from_disk(&toml_path, ctx.clone());
         assert!(
-            app.model.is_none(),
+            app.assets.model.is_none(),
             "previous STL model must be cleared immediately before spawning the new project's model load"
         );
         assert!(app.sim_panel.active_result.is_none());
@@ -833,7 +850,7 @@ mod tests {
         app.sync_viewport_scene_state();
 
         assert!(
-            app.model.is_none(),
+            app.assets.model.is_none(),
             "previous STL must stay cleared even when the new project's referenced model fails to load"
         );
         assert!(app.highlight.sim_stock_source.is_none());
@@ -876,7 +893,7 @@ mod tests {
 
         app.load_chipz_from_disk(&obj_chipz, ctx.clone());
         assert!(
-            app.model.is_none(),
+            app.assets.model.is_none(),
             "previous STL must be cleared immediately when opening a .chipz bundle"
         );
         assert!(app.sim_panel.active_result.is_none());
@@ -886,7 +903,8 @@ mod tests {
         app.sync_viewport_scene_state();
 
         assert_eq!(
-            app.model
+            app.assets
+                .model
                 .as_ref()
                 .expect("bundled OBJ should load")
                 .doc
@@ -909,7 +927,7 @@ mod tests {
         app.poll_background_jobs(&ctx);
         app.sync_viewport_scene_state();
 
-        assert!(app.model.is_none());
+        assert!(app.assets.model.is_none());
         assert!(app.project.models.is_empty());
         assert!(app.sim_panel.active_result.is_none());
         assert!(app.highlight.sim_stock_source.is_none());
@@ -928,7 +946,8 @@ mod tests {
         app.sync_viewport_scene_state();
 
         assert_eq!(
-            app.model
+            app.assets
+                .model
                 .as_ref()
                 .expect("sample plate should load")
                 .doc
@@ -971,7 +990,7 @@ mod tests {
             .record_before_edit("Second Edit", None, &app.project);
         app.project.project_name = "Modified Again".to_string();
         assert!(app.should_intercept_close());
-        app.allow_close_without_prompt = true;
+        app.session.allow_close_without_prompt = true;
         assert!(!app.should_intercept_close());
 
         let _ = std::fs::remove_dir_all(&tmp);
@@ -1033,7 +1052,7 @@ mod tests {
 
         app.load_project_from_disk(&toml_path, ctx.clone());
         wait_for_model_load(&mut app, &ctx);
-        assert!(app.model.is_none());
+        assert!(app.assets.model.is_none());
         assert!(
             app.project.primary_part_model().is_some(),
             "project should still retain its primary part model entry for Replace STEP Model recovery"
@@ -1054,7 +1073,8 @@ mod tests {
         wait_for_model_load(&mut app, &ctx);
 
         assert_eq!(
-            app.model
+            app.assets
+                .model
                 .as_ref()
                 .expect("recovered STEP should load via Replace STEP Model re-bind")
                 .doc

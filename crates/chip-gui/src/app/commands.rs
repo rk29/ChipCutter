@@ -19,7 +19,7 @@ use crate::{
 
 impl ChipCutterApp {
     pub(crate) fn duplicate_focused_operation(&mut self) {
-        if let InspectorFocus::Operation { setup_idx, op_idx } = self.inspector_focus
+        if let InspectorFocus::Operation { setup_idx, op_idx } = self.selection.inspector_focus
             && setup_idx < self.project.setups.len()
             && op_idx < self.project.setups[setup_idx].operations.len()
         {
@@ -28,7 +28,7 @@ impl ChipCutterApp {
             if let Some(new_idx) =
                 duplicate_operation_in_setup(&mut self.project.setups[setup_idx], op_idx)
             {
-                self.inspector_focus = InspectorFocus::Operation {
+                self.selection.inspector_focus = InspectorFocus::Operation {
                     setup_idx,
                     op_idx: new_idx,
                 };
@@ -37,7 +37,7 @@ impl ChipCutterApp {
     }
 
     pub(crate) fn move_focused_operation(&mut self, delta: isize) {
-        if let InspectorFocus::Operation { setup_idx, op_idx } = self.inspector_focus
+        if let InspectorFocus::Operation { setup_idx, op_idx } = self.selection.inspector_focus
             && setup_idx < self.project.setups.len()
         {
             let len = self.project.setups[setup_idx].operations.len();
@@ -54,7 +54,7 @@ impl ChipCutterApp {
                 if let Some(dst_idx) =
                     move_operation_to_slot(&mut self.project.setups[setup_idx], op_idx, slot)
                 {
-                    self.inspector_focus = InspectorFocus::Operation {
+                    self.selection.inspector_focus = InspectorFocus::Operation {
                         setup_idx,
                         op_idx: dst_idx,
                     };
@@ -64,7 +64,7 @@ impl ChipCutterApp {
     }
 
     pub(crate) fn delete_focused_item(&mut self) {
-        match self.inspector_focus {
+        match self.selection.inspector_focus {
             InspectorFocus::Operation { setup_idx, op_idx }
                 if setup_idx < self.project.setups.len()
                     && op_idx < self.project.setups[setup_idx].operations.len() =>
@@ -73,7 +73,7 @@ impl ChipCutterApp {
                     .record_before_edit("Delete Operation", None, &self.project);
                 if delete_operation_in_setup(&mut self.project.setups[setup_idx], op_idx) {
                     let rem = self.project.setups[setup_idx].operations.len();
-                    self.inspector_focus = if rem > 0 {
+                    self.selection.inspector_focus = if rem > 0 {
                         InspectorFocus::Operation {
                             setup_idx,
                             op_idx: op_idx.min(rem - 1),
@@ -81,11 +81,11 @@ impl ChipCutterApp {
                     } else {
                         InspectorFocus::Setup { setup_idx }
                     };
-                    self.pick_mode = ViewportPickMode::InspectEntity;
+                    self.selection.pick_mode = ViewportPickMode::InspectEntity;
                 }
             }
             InspectorFocus::Sketch { sketch_idx } if sketch_idx < self.project.sketches.len() => {
-                if let Some(e_idx) = self.selected_sketch_entity_idx
+                if let Some(e_idx) = self.selection.selected_sketch_entity_idx
                     && e_idx < self.project.sketches[sketch_idx].entities.len()
                 {
                     self.history
@@ -99,12 +99,12 @@ impl ChipCutterApp {
                     sk.reevaluate(&eval_ctx);
                     sk.rebuild_regions(fonts_opt);
                     let rem = sk.entities.len();
-                    self.selected_sketch_entity_idx = if rem > 0 {
+                    self.selection.selected_sketch_entity_idx = if rem > 0 {
                         Some(e_idx.min(rem - 1))
                     } else {
                         None
                     };
-                    self.cached_frame_geo = None;
+                    self.workers.cached_frame_geo = None;
                 }
             }
             _ => {}
@@ -112,12 +112,12 @@ impl ChipCutterApp {
     }
 
     pub(crate) fn create_new_adaptive_operation(&mut self) {
-        if self.active_setup_idx >= self.project.setups.len() {
+        if self.selection.active_setup_idx >= self.project.setups.len() {
             return;
         }
         self.history
             .record_before_edit("Add 2D Adaptive Clearing", None, &self.project);
-        let s_idx = self.active_setup_idx;
+        let s_idx = self.selection.active_setup_idx;
         let n = self.project.setups[s_idx].operations.len() + 1;
         let mut op = Operation::new_adaptive_2d(
             format!("op_{s_idx}_{n}_adaptive"),
@@ -139,54 +139,57 @@ impl ChipCutterApp {
         }
         self.project.setups[s_idx].operations.push(op);
         let o_idx = self.project.setups[s_idx].operations.len() - 1;
-        self.inspector_focus = InspectorFocus::Operation {
+        self.selection.inspector_focus = InspectorFocus::Operation {
             setup_idx: s_idx,
             op_idx: o_idx,
         };
-        self.op_tab = OperationTab::Geometry;
-        self.pick_mode =
-            default_pick_mode_for_op(s_idx, o_idx, OperationKind::Pocket2D, self.op_tab);
+        self.selection.op_tab = OperationTab::Geometry;
+        self.selection.pick_mode =
+            default_pick_mode_for_op(s_idx, o_idx, OperationKind::Pocket2D, self.selection.op_tab);
     }
 
     pub(crate) fn reset_blank_project(&mut self, name: &str) {
         self.prepare_for_project_replacement(None, None);
         let mut doc = ProjectDocument::new(name);
-        doc.display_units = self.prefs.default_units;
-        if self.prefs.default_machine_id != chip_machines::DEFAULT_MACHINE_ID
+        doc.display_units = self.session.prefs.default_units;
+        if self.session.prefs.default_machine_id != chip_machines::DEFAULT_MACHINE_ID
             && let Some(m) = self
                 .machines
                 .iter()
-                .find(|m| m.id.eq_ignore_ascii_case(&self.prefs.default_machine_id))
+                .find(|m| {
+                    m.id.eq_ignore_ascii_case(&self.session.prefs.default_machine_id)
+                })
                 .cloned()
         {
             doc.apply_machine_defaults(&m, true);
         }
         self.project = doc;
-        self.project_file_path = None;
+        self.session.project_file_path = None;
         self.sync_active_machine_tools();
         self.refresh_dependent_expressions();
     }
 
     pub(crate) fn add_standard_operation(&mut self, kind: OperationKind) {
-        if self.active_setup_idx >= self.project.setups.len() {
+        if self.selection.active_setup_idx >= self.project.setups.len() {
             return;
         }
         self.history
             .record_before_edit(format!("Add {}", kind.label()), None, &self.project);
-        let s_idx = self.active_setup_idx;
+        let s_idx = self.selection.active_setup_idx;
         if let Some(o_idx) =
             create_default_operation_in_setup(&mut self.project, &self.global_tools, s_idx, kind)
         {
-            self.inspector_focus = InspectorFocus::Operation {
+            self.selection.inspector_focus = InspectorFocus::Operation {
                 setup_idx: s_idx,
                 op_idx: o_idx,
             };
-            self.op_tab = if kind == OperationKind::Facing || kind.is_3d_surface() {
+            self.selection.op_tab = if kind == OperationKind::Facing || kind.is_3d_surface() {
                 OperationTab::Passes
             } else {
                 OperationTab::Geometry
             };
-            self.pick_mode = default_pick_mode_for_op(s_idx, o_idx, kind, self.op_tab);
+            self.selection.pick_mode =
+                default_pick_mode_for_op(s_idx, o_idx, kind, self.selection.op_tab);
         }
     }
 
@@ -222,26 +225,26 @@ impl ChipCutterApp {
                     format!("Setup {n} — Op {n}"),
                     WorkOffsetSlot::G55,
                 ));
-                self.active_setup_idx = self.project.setups.len() - 1;
-                self.inspector_focus = InspectorFocus::Setup {
-                    setup_idx: self.active_setup_idx,
+                self.selection.active_setup_idx = self.project.setups.len() - 1;
+                self.selection.inspector_focus = InspectorFocus::Setup {
+                    setup_idx: self.selection.active_setup_idx,
                 };
             }
             CommandId::OpenFlipJigWizard => {
                 self.modals
                     .flip_jig_wizard
-                    .open_for_setup(self.active_setup_idx);
+                    .open_for_setup(self.selection.active_setup_idx);
             }
             CommandId::OpenSoftJawWizard => {
                 self.modals
                     .soft_jaw_wizard
-                    .open_for_setup(self.active_setup_idx);
+                    .open_for_setup(self.selection.active_setup_idx);
             }
             CommandId::NewSketchSetupXy => self.create_new_setup_xy_sketch(),
             CommandId::NewSketchOn3dFace => {
-                if self.model.is_some() {
-                    self.pick_mode = ViewportPickMode::PickSketchHostFace {
-                        setup_idx: self.active_setup_idx,
+                if self.assets.model.is_some() {
+                    self.selection.pick_mode = ViewportPickMode::PickSketchHostFace {
+                        setup_idx: self.selection.active_setup_idx,
                     };
                 }
             }
@@ -279,7 +282,7 @@ impl ChipCutterApp {
             CommandId::Undo => self.perform_undo(),
             CommandId::Redo => self.perform_redo(),
             CommandId::GenerateActiveSetup => {
-                self.trigger_generate_dirty(Some(self.active_setup_idx), None);
+                self.trigger_generate_dirty(Some(self.selection.active_setup_idx), None);
             }
             CommandId::GenerateAllSetups => self.trigger_generate_dirty(None, None),
             CommandId::RunSimulation => {
@@ -309,7 +312,7 @@ impl ChipCutterApp {
             CommandId::AlignViewSetupTop => self.align_camera_to_active_setup(),
             CommandId::ResetWorkspaceLayout => {
                 self.tree = create_default_workspace_tree();
-                self.prefs.layout_shares = Default::default();
+                self.session.prefs.layout_shares = Default::default();
             }
             CommandId::ToggleThemeDarkLight => self.set_theme(ctx, self.theme.toggled()),
             CommandId::SwitchUnitsMillimeter => {
@@ -317,7 +320,7 @@ impl ChipCutterApp {
                     self.history
                         .record_before_edit("Set Units to mm", None, &self.project);
                     self.project.display_units = DisplayUnit::Millimeter;
-                    self.prefs.default_units = DisplayUnit::Millimeter;
+                    self.session.prefs.default_units = DisplayUnit::Millimeter;
                     self.refresh_dependent_expressions();
                 }
             }
@@ -326,7 +329,7 @@ impl ChipCutterApp {
                     self.history
                         .record_before_edit("Set Units to in", None, &self.project);
                     self.project.display_units = DisplayUnit::Inch;
-                    self.prefs.default_units = DisplayUnit::Inch;
+                    self.session.prefs.default_units = DisplayUnit::Inch;
                     self.refresh_dependent_expressions();
                 }
             }
@@ -350,12 +353,12 @@ impl ChipCutterApp {
     }
 
     pub(crate) fn create_new_vcarve_operation(&mut self) {
-        if self.active_setup_idx >= self.project.setups.len() {
+        if self.selection.active_setup_idx >= self.project.setups.len() {
             return;
         }
         self.history
             .record_before_edit("Add V-Carve", None, &self.project);
-        let s_idx = self.active_setup_idx;
+        let s_idx = self.selection.active_setup_idx;
         let n = self.project.setups[s_idx].operations.len() + 1;
         let mut op = Operation::new(
             format!("op_{s_idx}_{n}_vcarve"),
@@ -378,12 +381,13 @@ impl ChipCutterApp {
         }
         self.project.setups[s_idx].operations.push(op);
         let o_idx = self.project.setups[s_idx].operations.len() - 1;
-        self.inspector_focus = InspectorFocus::Operation {
+        self.selection.inspector_focus = InspectorFocus::Operation {
             setup_idx: s_idx,
             op_idx: o_idx,
         };
-        self.op_tab = OperationTab::Geometry;
-        self.pick_mode = default_pick_mode_for_op(s_idx, o_idx, OperationKind::VCarve, self.op_tab);
+        self.selection.op_tab = OperationTab::Geometry;
+        self.selection.pick_mode =
+            default_pick_mode_for_op(s_idx, o_idx, OperationKind::VCarve, self.selection.op_tab);
     }
 
     pub(crate) fn trigger_gcode_export_from_menu(&mut self) {
@@ -396,7 +400,7 @@ impl ChipCutterApp {
         self.gcode_panel.ensure_profiles_loaded(proj_dir);
         self.gcode_panel.rebuild_preview_if_needed(
             &self.project,
-            self.active_setup_idx,
+            self.selection.active_setup_idx,
             cad_doc,
             cad_rev,
             &self.toolpath_cache,
@@ -404,7 +408,7 @@ impl ChipCutterApp {
         );
         self.gcode_panel.trigger_export_action(
             &self.project,
-            self.active_setup_idx,
+            self.selection.active_setup_idx,
             &self.toolpath_cache,
             cad_rev,
             &self.sim_panel,
@@ -439,7 +443,7 @@ impl ChipCutterApp {
         let target_id = post_id.map(str::to_string).unwrap_or_else(|| {
             self.project
                 .setups
-                .get(self.active_setup_idx)
+                .get(self.selection.active_setup_idx)
                 .map_or_else(|| "grbl".to_string(), |s| s.post_profile.clone())
         });
         self.modals

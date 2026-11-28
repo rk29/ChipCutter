@@ -3,6 +3,7 @@ pub mod loader;
 pub mod menus;
 pub mod modals;
 pub mod pane_behavior;
+mod self_test;
 pub mod shortcuts;
 pub mod toolbar;
 pub mod viewport_controller;
@@ -115,6 +116,136 @@ impl SelfTestConfig {
     }
 }
 
+/// Persistent file/session state, window title cache, external STEP watcher, and user prefs.
+pub(crate) struct WorkspaceSession {
+    pub project_file_path: Option<PathBuf>,
+    pub bundle_extract_dir: Option<PathBuf>,
+    pub clean_undo_len: Option<usize>,
+    pub allow_close_without_prompt: bool,
+    pub last_window_title: String,
+    pub last_disk_check: Instant,
+    pub external_step_modified: bool,
+    pub last_reload_banner: Option<(String, bool)>,
+    pub prefs: UserPreferences,
+    pub last_saved_prefs: UserPreferences,
+}
+
+/// Active browser/inspector focus, tabs, viewport pick mode, sketch authoring, and measure tool state.
+pub(crate) struct SelectionAndPickState {
+    pub active_setup_idx: usize,
+    pub inspector_focus: InspectorFocus,
+    pub setup_tab: SetupTab,
+    pub op_tab: OperationTab,
+    pub pick_mode: ViewportPickMode,
+    pub geometry_pick_target: GeometryPickTarget,
+    pub editing_shared_avoid_id: Option<String>,
+    pub selected_fixture_idx: Option<usize>,
+    pub selected_sketch_entity_idx: Option<usize>,
+    pub sketch_snap_grid_mm: Option<f64>,
+    pub sketch_author_start_xy: Option<chip_math::DVec2>,
+    pub pick_filter: PickFilter,
+    pub measure_state: MeasureToolState,
+}
+
+impl Default for SelectionAndPickState {
+    fn default() -> Self {
+        Self {
+            active_setup_idx: 0,
+            inspector_focus: InspectorFocus::Setup { setup_idx: 0 },
+            setup_tab: SetupTab::Wcs,
+            op_tab: OperationTab::Passes,
+            pick_mode: ViewportPickMode::InspectEntity,
+            geometry_pick_target: GeometryPickTarget::CuttingArea,
+            editing_shared_avoid_id: None,
+            selected_fixture_idx: None,
+            selected_sketch_entity_idx: None,
+            sketch_snap_grid_mm: None,
+            sketch_author_start_xy: None,
+            pick_filter: PickFilter::Any,
+            measure_state: MeasureToolState::default(),
+        }
+    }
+}
+
+/// Viewport visual overlay toggles, inspector lock flags, and per-operation visibility overrides.
+pub(crate) struct ViewportOverlayPrefs {
+    pub lock_chipload: bool,
+    pub lock_model_uniform_scale: bool,
+    pub show_27pt_dots: bool,
+    pub show_z_planes: bool,
+    pub show_all_setup_toolpaths: bool,
+    pub hidden_operation_ids: std::collections::HashSet<String>,
+    pub auto_sim_after_gen: bool,
+}
+
+impl ViewportOverlayPrefs {
+    fn new(auto_sim_after_gen: bool) -> Self {
+        Self {
+            lock_chipload: true,
+            lock_model_uniform_scale: true,
+            show_27pt_dots: true,
+            show_z_planes: true,
+            show_all_setup_toolpaths: true,
+            hidden_operation_ids: std::collections::HashSet::new(),
+            auto_sim_after_gen,
+        }
+    }
+}
+
+/// Background worker channels, DAG job dispatcher, and per-frame geometry / reach analysis caches.
+pub(crate) struct BackgroundWorkers {
+    pub dispatcher: JobDispatcher,
+    pub loading_in_flight: bool,
+    pub load_generation: u64,
+    pub job_tx: Sender<LoadJobResult>,
+    pub job_rx: Receiver<LoadJobResult>,
+    pub cached_frame_geo: Option<CachedFrameGeo>,
+    pub boundary_preview_cache: BoundaryPreviewCache,
+    pub reach_cache_key: Option<u64>,
+    pub reach_in_flight_key: Option<u64>,
+    pub reach_job_tx: Sender<(u64, Arc<ReachAnalysisResult>)>,
+    pub reach_job_rx: Receiver<(u64, Arc<ReachAnalysisResult>)>,
+    pub reach_result: Option<Arc<ReachAnalysisResult>>,
+}
+
+/// Loaded primary CAD model, imported fixture CAD documents, and revision counters.
+pub(crate) struct CadAssetsState {
+    pub model: Option<LoadedModelState>,
+    pub fixture_models: HashMap<String, Arc<CadDocument>>,
+    pub fixture_models_revision: u64,
+    pub empty_cad: Arc<CadDocument>,
+    pub next_revision: u64,
+}
+
+impl Default for CadAssetsState {
+    fn default() -> Self {
+        Self {
+            model: None,
+            fixture_models: HashMap::new(),
+            fixture_models_revision: 0,
+            empty_cad: Arc::new(CadDocument::empty()),
+            next_revision: 1,
+        }
+    }
+}
+
+/// Parametric expression scratchpad inputs displayed in the CAD Entity Inspector.
+pub(crate) struct WorkbenchEvalInputs {
+    pub wb_tool_dia: ExpressionInput,
+    pub wb_stepover: ExpressionInput,
+    pub wb_clearance_z: ExpressionInput,
+}
+
+impl Default for WorkbenchEvalInputs {
+    fn default() -> Self {
+        Self {
+            wb_tool_dia: ExpressionInput::new(6.35, Some("1/4 in")),
+            wb_stepover: ExpressionInput::new(2.54, Some("tool_d * 0.4")),
+            wb_clearance_z: ExpressionInput::new(26.0, Some("model_top_z + 10 mm")),
+        }
+    }
+}
+
 /// Main ChipCutter desktop application state (`eframe` + `wgpu` + `egui_tiles`).
 pub struct ChipCutterApp {
     pub(crate) tree: egui_tiles::Tree<WorkspacePane>,
@@ -122,72 +253,24 @@ pub struct ChipCutterApp {
     pub(crate) camera: CadCamera,
     pub(crate) viewport_renderer: Option<ViewportRenderer>,
     pub(crate) wgpu_render_state: Option<egui_wgpu::RenderState>,
+    pub(crate) highlight: HighlightState,
 
     pub(crate) project: ProjectDocument,
-    pub(crate) project_file_path: Option<PathBuf>,
-    pub(crate) bundle_extract_dir: Option<PathBuf>,
-    pub(crate) clean_undo_len: Option<usize>,
-    pub(crate) allow_close_without_prompt: bool,
-    pub(crate) last_window_title: String,
-
     pub(crate) history: UndoHistory,
     pub(crate) toolpath_cache: ToolpathCache,
-    pub(crate) dispatcher: JobDispatcher,
     pub(crate) machines: Vec<chip_machines::MachineDefinition>,
     pub(crate) global_tools: ToolLibrary,
-    pub(crate) prefs: UserPreferences,
-    pub(crate) last_saved_prefs: UserPreferences,
+
     pub(crate) modals: ModalStates,
     pub(crate) sim_panel: SimulationPanelState,
     pub(crate) gcode_panel: GCodePreviewPanelState,
-    pub(crate) auto_sim_after_gen: bool,
 
-    pub(crate) active_setup_idx: usize,
-    pub(crate) inspector_focus: InspectorFocus,
-    pub(crate) setup_tab: SetupTab,
-    pub(crate) op_tab: OperationTab,
-    pub(crate) pick_mode: ViewportPickMode,
-    pub(crate) geometry_pick_target: GeometryPickTarget,
-    pub(crate) editing_shared_avoid_id: Option<String>,
-    pub(crate) selected_fixture_idx: Option<usize>,
-    pub(crate) selected_sketch_entity_idx: Option<usize>,
-    pub(crate) sketch_snap_grid_mm: Option<f64>,
-    pub(crate) sketch_author_start_xy: Option<chip_math::DVec2>,
-    pub(crate) lock_chipload: bool,
-    pub(crate) lock_model_uniform_scale: bool,
-    pub(crate) show_27pt_dots: bool,
-    pub(crate) show_z_planes: bool,
-    pub(crate) show_all_setup_toolpaths: bool,
-    pub(crate) hidden_operation_ids: std::collections::HashSet<String>,
-
-    pub(crate) model: Option<LoadedModelState>,
-    pub(crate) fixture_models: HashMap<String, Arc<CadDocument>>,
-    pub(crate) fixture_models_revision: u64,
-    pub(crate) empty_cad: Arc<CadDocument>,
-    pub(crate) next_revision: u64,
-    pub(crate) loading_in_flight: bool,
-    pub(crate) load_generation: u64,
-    pub(crate) job_tx: Sender<LoadJobResult>,
-    pub(crate) job_rx: Receiver<LoadJobResult>,
-
-    pub(crate) last_disk_check: Instant,
-    pub(crate) external_step_modified: bool,
-    pub(crate) last_reload_banner: Option<(String, bool)>,
-    pub(crate) cached_frame_geo: Option<CachedFrameGeo>,
-    pub(crate) boundary_preview_cache: BoundaryPreviewCache,
-
-    pub(crate) pick_filter: PickFilter,
-    pub(crate) highlight: HighlightState,
-    pub(crate) measure_state: MeasureToolState,
-    pub(crate) reach_cache_key: Option<u64>,
-    pub(crate) reach_in_flight_key: Option<u64>,
-    pub(crate) reach_job_tx: Sender<(u64, Arc<ReachAnalysisResult>)>,
-    pub(crate) reach_job_rx: Receiver<(u64, Arc<ReachAnalysisResult>)>,
-    pub(crate) reach_result: Option<Arc<ReachAnalysisResult>>,
-
-    pub(crate) wb_tool_dia: ExpressionInput,
-    pub(crate) wb_stepover: ExpressionInput,
-    pub(crate) wb_clearance_z: ExpressionInput,
+    pub(crate) session: WorkspaceSession,
+    pub(crate) selection: SelectionAndPickState,
+    pub(crate) overlay_prefs: ViewportOverlayPrefs,
+    pub(crate) workers: BackgroundWorkers,
+    pub(crate) assets: CadAssetsState,
+    pub(crate) workbench: WorkbenchEvalInputs,
 
     pub(crate) logs: Vec<String>,
     pub(crate) self_test: Option<SelfTestConfig>,
@@ -195,7 +278,7 @@ pub struct ChipCutterApp {
 
 impl Drop for ChipCutterApp {
     fn drop(&mut self) {
-        if let Some(dir) = self.bundle_extract_dir.take() {
+        if let Some(dir) = self.session.bundle_extract_dir.take() {
             let _ = std::fs::remove_dir_all(dir);
         }
     }
@@ -275,62 +358,6 @@ impl ChipCutterApp {
             camera,
             viewport_renderer,
             wgpu_render_state,
-            project: initial_project,
-            project_file_path: None,
-            bundle_extract_dir: None,
-            clean_undo_len: Some(0),
-            allow_close_without_prompt: false,
-            last_window_title: String::new(),
-            history: UndoHistory::new(100),
-            toolpath_cache: ToolpathCache::new(128),
-            dispatcher,
-            machines,
-            global_tools,
-            last_saved_prefs: prefs.clone(),
-            #[cfg(feature = "gpu-compute")]
-            sim_panel: SimulationPanelState::with_prefs_and_gpu(
-                prefs.sim_engine,
-                prefs.sim_backend,
-                shared_gpu_ctx,
-            ),
-            #[cfg(not(feature = "gpu-compute"))]
-            sim_panel: SimulationPanelState::with_prefs(prefs.sim_engine, prefs.sim_backend),
-            prefs,
-            modals: ModalStates::new(),
-            gcode_panel: GCodePreviewPanelState::default(),
-            auto_sim_after_gen: true,
-            active_setup_idx: 0,
-            inspector_focus: InspectorFocus::Setup { setup_idx: 0 },
-            setup_tab: SetupTab::Wcs,
-            op_tab: OperationTab::Passes,
-            pick_mode: ViewportPickMode::InspectEntity,
-            geometry_pick_target: GeometryPickTarget::CuttingArea,
-            editing_shared_avoid_id: None,
-            selected_fixture_idx: None,
-            selected_sketch_entity_idx: None,
-            sketch_snap_grid_mm: None,
-            sketch_author_start_xy: None,
-            lock_chipload: true,
-            lock_model_uniform_scale: true,
-            show_27pt_dots: true,
-            show_z_planes: true,
-            show_all_setup_toolpaths: true,
-            hidden_operation_ids: std::collections::HashSet::new(),
-            model: None,
-            fixture_models: HashMap::new(),
-            fixture_models_revision: 0,
-            empty_cad: Arc::new(CadDocument::empty()),
-            next_revision: 1,
-            loading_in_flight: false,
-            load_generation: 0,
-            job_tx,
-            job_rx,
-            last_disk_check: Instant::now(),
-            external_step_modified: false,
-            last_reload_banner: None,
-            cached_frame_geo: None,
-            boundary_preview_cache: BoundaryPreviewCache::default(),
-            pick_filter: PickFilter::Any,
             highlight: HighlightState {
                 theme: active_theme,
                 show_toolpaths: true,
@@ -339,25 +366,61 @@ impl ChipCutterApp {
                 ghost_part: false,
                 ..HighlightState::default()
             },
-            measure_state: MeasureToolState::default(),
-            reach_cache_key: None,
-            reach_in_flight_key: None,
-            reach_job_tx,
-            reach_job_rx,
-            reach_result: None,
-            wb_tool_dia: ExpressionInput::new(6.35, Some("1/4 in")),
-            wb_stepover: ExpressionInput::new(2.54, Some("tool_d * 0.4")),
-            wb_clearance_z: ExpressionInput::new(26.0, Some("model_top_z + 10 mm")),
+            project: initial_project,
+            history: UndoHistory::new(100),
+            toolpath_cache: ToolpathCache::new(128),
+            machines,
+            global_tools,
+            modals: ModalStates::new(),
+            #[cfg(feature = "gpu-compute")]
+            sim_panel: SimulationPanelState::with_prefs_and_gpu(
+                prefs.sim_engine,
+                prefs.sim_backend,
+                shared_gpu_ctx,
+            ),
+            #[cfg(not(feature = "gpu-compute"))]
+            sim_panel: SimulationPanelState::with_prefs(prefs.sim_engine, prefs.sim_backend),
+            gcode_panel: GCodePreviewPanelState::default(),
+            session: WorkspaceSession {
+                project_file_path: None,
+                bundle_extract_dir: None,
+                clean_undo_len: Some(0),
+                allow_close_without_prompt: false,
+                last_window_title: String::new(),
+                last_disk_check: Instant::now(),
+                external_step_modified: false,
+                last_reload_banner: None,
+                last_saved_prefs: prefs.clone(),
+                prefs,
+            },
+            selection: SelectionAndPickState::default(),
+            overlay_prefs: ViewportOverlayPrefs::new(true),
+            workers: BackgroundWorkers {
+                dispatcher,
+                loading_in_flight: false,
+                load_generation: 0,
+                job_tx,
+                job_rx,
+                cached_frame_geo: None,
+                boundary_preview_cache: BoundaryPreviewCache::default(),
+                reach_cache_key: None,
+                reach_in_flight_key: None,
+                reach_job_tx,
+                reach_job_rx,
+                reach_result: None,
+            },
+            assets: CadAssetsState::default(),
+            workbench: WorkbenchEvalInputs::default(),
             logs: vec![format!("ChipCutter v{APP_VERSION} initialized.")],
             self_test,
         };
-        app.highlight.show_toolpaths = app.prefs.show_toolpaths;
-        app.highlight.show_rapids = app.prefs.show_rapids;
-        app.highlight.show_stock = app.prefs.show_stock;
-        app.highlight.show_fixtures = app.prefs.show_fixtures;
-        app.highlight.ghost_part = app.prefs.ghost_part;
-        app.sim_panel.resolution = app.prefs.sim_resolution;
-        app.sim_panel.mesh_skinning = app.prefs.sim_mesh_skinning;
+        app.highlight.show_toolpaths = app.session.prefs.show_toolpaths;
+        app.highlight.show_rapids = app.session.prefs.show_rapids;
+        app.highlight.show_stock = app.session.prefs.show_stock;
+        app.highlight.show_fixtures = app.session.prefs.show_fixtures;
+        app.highlight.ghost_part = app.session.prefs.ghost_part;
+        app.sim_panel.resolution = app.session.prefs.sim_resolution;
+        app.sim_panel.mesh_skinning = app.session.prefs.sim_mesh_skinning;
         if let Some(st) = &app.self_test {
             if let Some(eng) = st.capture.sim_engine {
                 app.sim_panel.engine = eng;
@@ -392,7 +455,7 @@ impl ChipCutterApp {
                 StartupDemoMode::None => {
                     if app.self_test.is_some() {
                         app.spawn_cam_torture_sample_load(true, cc.egui_ctx.clone());
-                    } else if app.prefs.show_welcome_on_startup {
+                    } else if app.session.prefs.show_welcome_on_startup {
                         app.modals.welcome.open = true;
                     }
                 }
@@ -461,55 +524,6 @@ impl ChipCutterApp {
             camera: CadCamera::default(),
             viewport_renderer: None,
             wgpu_render_state: None,
-            project: initial_project,
-            project_file_path: None,
-            bundle_extract_dir: None,
-            clean_undo_len: Some(0),
-            allow_close_without_prompt: false,
-            last_window_title: String::new(),
-            history: UndoHistory::new(100),
-            toolpath_cache: ToolpathCache::new(128),
-            dispatcher,
-            machines,
-            global_tools,
-            last_saved_prefs: prefs.clone(),
-            sim_panel: SimulationPanelState::with_prefs(prefs.sim_engine, prefs.sim_backend),
-            prefs,
-            modals: ModalStates::new(),
-            gcode_panel: GCodePreviewPanelState::default(),
-            auto_sim_after_gen: false,
-            active_setup_idx: 0,
-            inspector_focus: InspectorFocus::Setup { setup_idx: 0 },
-            setup_tab: SetupTab::Wcs,
-            op_tab: OperationTab::Passes,
-            pick_mode: ViewportPickMode::InspectEntity,
-            geometry_pick_target: GeometryPickTarget::CuttingArea,
-            editing_shared_avoid_id: None,
-            selected_fixture_idx: None,
-            selected_sketch_entity_idx: None,
-            sketch_snap_grid_mm: None,
-            sketch_author_start_xy: None,
-            lock_chipload: true,
-            lock_model_uniform_scale: true,
-            show_27pt_dots: true,
-            show_z_planes: true,
-            show_all_setup_toolpaths: true,
-            hidden_operation_ids: std::collections::HashSet::new(),
-            model: None,
-            fixture_models: HashMap::new(),
-            fixture_models_revision: 0,
-            empty_cad: Arc::new(CadDocument::empty()),
-            next_revision: 1,
-            loading_in_flight: false,
-            load_generation: 0,
-            job_tx,
-            job_rx,
-            last_disk_check: Instant::now(),
-            external_step_modified: false,
-            last_reload_banner: None,
-            cached_frame_geo: None,
-            boundary_preview_cache: BoundaryPreviewCache::default(),
-            pick_filter: PickFilter::Any,
             highlight: HighlightState {
                 theme: active_theme,
                 show_toolpaths: true,
@@ -518,25 +532,54 @@ impl ChipCutterApp {
                 ghost_part: false,
                 ..HighlightState::default()
             },
-            measure_state: MeasureToolState::default(),
-            reach_cache_key: None,
-            reach_in_flight_key: None,
-            reach_job_tx,
-            reach_job_rx,
-            reach_result: None,
-            wb_tool_dia: ExpressionInput::new(6.35, Some("1/4 in")),
-            wb_stepover: ExpressionInput::new(2.54, Some("tool_d * 0.4")),
-            wb_clearance_z: ExpressionInput::new(26.0, Some("model_top_z + 10 mm")),
+            project: initial_project,
+            history: UndoHistory::new(100),
+            toolpath_cache: ToolpathCache::new(128),
+            machines,
+            global_tools,
+            modals: ModalStates::new(),
+            sim_panel: SimulationPanelState::with_prefs(prefs.sim_engine, prefs.sim_backend),
+            gcode_panel: GCodePreviewPanelState::default(),
+            session: WorkspaceSession {
+                project_file_path: None,
+                bundle_extract_dir: None,
+                clean_undo_len: Some(0),
+                allow_close_without_prompt: false,
+                last_window_title: String::new(),
+                last_disk_check: Instant::now(),
+                external_step_modified: false,
+                last_reload_banner: None,
+                last_saved_prefs: prefs.clone(),
+                prefs,
+            },
+            selection: SelectionAndPickState::default(),
+            overlay_prefs: ViewportOverlayPrefs::new(false),
+            workers: BackgroundWorkers {
+                dispatcher,
+                loading_in_flight: false,
+                load_generation: 0,
+                job_tx,
+                job_rx,
+                cached_frame_geo: None,
+                boundary_preview_cache: BoundaryPreviewCache::default(),
+                reach_cache_key: None,
+                reach_in_flight_key: None,
+                reach_job_tx,
+                reach_job_rx,
+                reach_result: None,
+            },
+            assets: CadAssetsState::default(),
+            workbench: WorkbenchEvalInputs::default(),
             logs: Vec::new(),
             self_test: None,
         }
     }
 
     pub(crate) fn record_recent_file(&mut self, path: &Path) {
-        self.prefs.push_recent_file(path);
+        self.session.prefs.push_recent_file(path);
         if self.self_test.is_none() && !cfg!(test) {
-            let _ = save_prefs(&self.prefs);
-            self.last_saved_prefs = self.prefs.clone();
+            let _ = save_prefs(&self.session.prefs);
+            self.session.last_saved_prefs = self.session.prefs.clone();
         }
     }
 
@@ -627,26 +670,26 @@ impl ChipCutterApp {
         if self.self_test.is_some() || pointer_down || cfg!(test) {
             return;
         }
-        self.prefs.theme = self.theme;
-        self.prefs.mouse_preset = self.camera.mouse_preset;
-        self.prefs.orbit_mode = self.camera.orbit_mode;
-        self.prefs.orthographic = self.camera.projection.is_orthographic();
-        self.prefs.show_toolpaths = self.highlight.show_toolpaths;
-        self.prefs.show_rapids = self.highlight.show_rapids;
-        self.prefs.show_stock = self.highlight.show_stock;
-        self.prefs.show_fixtures = self.highlight.show_fixtures;
-        self.prefs.ghost_part = self.highlight.ghost_part;
-        self.prefs.sim_engine = self.sim_panel.engine;
-        self.prefs.sim_resolution = self.sim_panel.resolution;
-        self.prefs.sim_backend = self.sim_panel.backend_choice;
-        self.prefs.sim_mesh_skinning = self.sim_panel.mesh_skinning;
+        self.session.prefs.theme = self.theme;
+        self.session.prefs.mouse_preset = self.camera.mouse_preset;
+        self.session.prefs.orbit_mode = self.camera.orbit_mode;
+        self.session.prefs.orthographic = self.camera.projection.is_orthographic();
+        self.session.prefs.show_toolpaths = self.highlight.show_toolpaths;
+        self.session.prefs.show_rapids = self.highlight.show_rapids;
+        self.session.prefs.show_stock = self.highlight.show_stock;
+        self.session.prefs.show_fixtures = self.highlight.show_fixtures;
+        self.session.prefs.ghost_part = self.highlight.ghost_part;
+        self.session.prefs.sim_engine = self.sim_panel.engine;
+        self.session.prefs.sim_resolution = self.sim_panel.resolution;
+        self.session.prefs.sim_backend = self.sim_panel.backend_choice;
+        self.session.prefs.sim_mesh_skinning = self.sim_panel.mesh_skinning;
         let shares = extract_workspace_shares(&self.tree);
-        if !shares.approx_eq(self.prefs.layout_shares) {
-            self.prefs.layout_shares = shares;
+        if !shares.approx_eq(self.session.prefs.layout_shares) {
+            self.session.prefs.layout_shares = shares;
         }
-        if self.prefs != self.last_saved_prefs {
-            let _ = save_prefs(&self.prefs);
-            self.last_saved_prefs = self.prefs.clone();
+        if self.session.prefs != self.session.last_saved_prefs {
+            let _ = save_prefs(&self.session.prefs);
+            self.session.last_saved_prefs = self.session.prefs.clone();
         }
     }
 
@@ -658,35 +701,37 @@ impl ChipCutterApp {
     }
 
     pub(crate) fn active_project_dir(&self) -> Option<&Path> {
-        self.project_file_path
+        self.session
+            .project_file_path
             .as_deref()
             .and_then(Path::parent)
-            .or(self.bundle_extract_dir.as_deref())
+            .or(self.session.bundle_extract_dir.as_deref())
     }
 
     pub(crate) fn virtual_project_file_path(&self) -> Option<PathBuf> {
-        self.project_file_path.clone().or_else(|| {
-            self.bundle_extract_dir
+        self.session.project_file_path.clone().or_else(|| {
+            self.session
+                .bundle_extract_dir
                 .as_ref()
                 .map(|d| d.join("project.chip.toml"))
         })
     }
 
     pub(crate) fn clear_bundle_extract_dir(&mut self) {
-        if let Some(dir) = self.bundle_extract_dir.take() {
+        if let Some(dir) = self.session.bundle_extract_dir.take() {
             let _ = std::fs::remove_dir_all(dir);
         }
     }
 
     pub(crate) fn eval_context(&self) -> EvalContext {
-        let (stock_x, stock_y, stock_z, top_z, bot_z) = match &self.model {
+        let (stock_x, stock_y, stock_z, top_z, bot_z) = match &self.assets.model {
             Some(m) if m.doc.aabb_mm.is_valid() => {
                 let sz = m.doc.aabb_mm.size();
                 (sz.x, sz.y, sz.z, m.doc.aabb_mm.max.z, m.doc.aabb_mm.min.z)
             }
             _ => (90.0, 70.0, 20.0, 20.0, 0.0),
         };
-        let tool_d = self.wb_tool_dia.value_mm();
+        let tool_d = self.workbench.wb_tool_dia.value_mm();
         EvalContext::new(self.project.display_units)
             .with_var("tool_d", tool_d)
             .with_var("tool_r", 0.5 * tool_d)
@@ -699,27 +744,27 @@ impl ChipCutterApp {
 
     pub(crate) fn refresh_dependent_expressions(&mut self) {
         let ctx = self.eval_context();
-        self.wb_stepover.refresh(&ctx);
-        self.wb_clearance_z.refresh(&ctx);
+        self.workbench.wb_stepover.refresh(&ctx);
+        self.workbench.wb_clearance_z.refresh(&ctx);
     }
 
     pub(crate) fn has_geometry(&self) -> bool {
-        self.model.is_some() || !self.project.sketches.is_empty()
+        self.assets.model.is_some() || !self.project.sketches.is_empty()
     }
 
     /// Returns `(Arc<CadDocument>, cad_revision)` for either the loaded 3D STEP model OR Pure-2D (`empty_cad`).
     pub(crate) fn effective_cad_arc(&self) -> Option<(Arc<CadDocument>, u64)> {
-        if let Some(m) = &self.model {
+        if let Some(m) = &self.assets.model {
             Some((Arc::clone(&m.doc), m.revision))
         } else if !self.project.sketches.is_empty() {
-            Some((Arc::clone(&self.empty_cad), 0))
+            Some((Arc::clone(&self.assets.empty_cad), 0))
         } else {
             None
         }
     }
 
     pub(crate) fn fit_scene_to_viewport(&mut self) {
-        if let Some(m) = &self.model {
+        if let Some(m) = &self.assets.model {
             self.camera.fit_aabb(&m.doc.aabb_mm);
         } else if let Some(Ok(rs)) = self.active_resolved_setup() {
             let b = rs.stock.aabb_wcs();
@@ -739,11 +784,15 @@ impl ChipCutterApp {
 
     fn compute_frame_geo_signature(&self) -> u64 {
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        self.model.as_ref().map_or(0, |m| m.revision).hash(&mut h);
-        self.fixture_models_revision.hash(&mut h);
-        self.active_setup_idx.hash(&mut h);
+        self.assets
+            .model
+            .as_ref()
+            .map_or(0, |m| m.revision)
+            .hash(&mut h);
+        self.assets.fixture_models_revision.hash(&mut h);
+        self.selection.active_setup_idx.hash(&mut h);
         format!("{:?}", self.project.display_units).hash(&mut h);
-        format!("{:?}", self.inspector_focus).hash(&mut h);
+        format!("{:?}", self.selection.inspector_focus).hash(&mut h);
         for sk in &self.project.sketches {
             sk.id.hash(&mut h);
             sk.visible.hash(&mut h);
@@ -751,7 +800,7 @@ impl ChipCutterApp {
             sk.entities.len().hash(&mut h);
             sk.regions.len().hash(&mut h);
         }
-        if let Some(setup) = self.project.setups.get(self.active_setup_idx) {
+        if let Some(setup) = self.project.setups.get(self.selection.active_setup_idx) {
             format!("{:?}", setup.target_bodies).hash(&mut h);
             format!("{:?}", setup.wcs).hash(&mut h);
             format!("{:?}", setup.stock).hash(&mut h);
@@ -760,11 +809,11 @@ impl ChipCutterApp {
             format!("{:?}", setup.fixtures).hash(&mut h);
             setup.auto_avoid_fixtures_on_rapids.hash(&mut h);
         }
-        self.prefs.auto_rotate_indexed_op.hash(&mut h);
+        self.session.prefs.auto_rotate_indexed_op.hash(&mut h);
         let sim_active =
             self.highlight.sim_stock_source.is_some() || self.highlight.sim_tool_mesh.is_some();
         sim_active.hash(&mut h);
-        if let InspectorFocus::Operation { setup_idx, op_idx } = self.inspector_focus
+        if let InspectorFocus::Operation { setup_idx, op_idx } = self.selection.inspector_focus
             && let Some(setup) = self.project.setups.get(setup_idx)
             && let Some(op) = setup.operations.get(op_idx)
         {
@@ -772,7 +821,7 @@ impl ChipCutterApp {
             format!("{:?}", op.rotary).hash(&mut h);
             matches!(op.runtime_status, OperationStatus::NeedsRepick { .. }).hash(&mut h);
         }
-        if let InspectorFocus::KeepOutRegion { region_idx } = self.inspector_focus
+        if let InspectorFocus::KeepOutRegion { region_idx } = self.selection.inspector_focus
             && let Some(sr) = self.project.avoid_regions.get(region_idx)
         {
             format!("{sr:?}").hash(&mut h);
@@ -782,11 +831,11 @@ impl ChipCutterApp {
 
     pub(crate) fn ensure_frame_geo_cached(&mut self) -> &CachedFrameGeo {
         let sig = self.compute_frame_geo_signature();
-        if self.cached_frame_geo.as_ref().map(|c| c.sig) != Some(sig) {
+        if self.workers.cached_frame_geo.as_ref().map(|c| c.sig) != Some(sig) {
             let eff_cad = self.effective_cad_arc();
             let resolved_setup = match (
                 eff_cad.as_ref(),
-                self.project.setups.get(self.active_setup_idx),
+                self.project.setups.get(self.selection.active_setup_idx),
             ) {
                 (Some((doc, _)), Some(setup)) => Some(
                     setup
@@ -804,7 +853,7 @@ impl ChipCutterApp {
             let mut fixture_mesh_arcs = Vec::new();
             if let (Some(Ok(rs)), Some(setup)) = (
                 &resolved_setup,
-                self.project.setups.get(self.active_setup_idx),
+                self.project.setups.get(self.selection.active_setup_idx),
             ) && !setup.fixtures.is_empty()
             {
                 let eval_ctx = rs.eval_context(self.project.display_units);
@@ -814,7 +863,7 @@ impl ChipCutterApp {
                         continue;
                     }
                     if let Ok(sol) = resolve_fixture_body(fix, &stock_aabb, &eval_ctx, &mut |id| {
-                        self.fixture_models.get(id).map(Arc::as_ref)
+                        self.assets.fixture_models.get(id).map(Arc::as_ref)
                     }) {
                         let mesh_arc = Arc::new(sol.mesh_wcs.clone());
                         fixture_mesh_arcs.push(mesh_arc);
@@ -825,17 +874,20 @@ impl ChipCutterApp {
 
             let sim_active =
                 self.highlight.sim_stock_source.is_some() || self.highlight.sim_tool_mesh.is_some();
-            let focused_extracted = match (eff_cad.as_ref(), &resolved_setup, self.inspector_focus)
-            {
+            let focused_extracted = match (
+                eff_cad.as_ref(),
+                &resolved_setup,
+                self.selection.inspector_focus,
+            ) {
                 (Some((doc, _)), Some(Ok(rs)), InspectorFocus::Operation { setup_idx, op_idx }) => {
                     if let Some(setup) = self.project.setups.get(setup_idx)
                         && let Some(op) = setup.operations.get(op_idx)
                         && !matches!(op.runtime_status, OperationStatus::NeedsRepick { .. })
                     {
-                        let eff_rs = if setup_idx == self.active_setup_idx {
+                        let eff_rs = if setup_idx == self.selection.active_setup_idx {
                             viewport_controller::effective_setup_for_indexed_preview(
                                 rs,
-                                self.prefs.auto_rotate_indexed_op,
+                                self.session.prefs.auto_rotate_indexed_op,
                                 sim_active,
                                 op,
                             )
@@ -858,7 +910,7 @@ impl ChipCutterApp {
                 _ => None,
             };
 
-            self.cached_frame_geo = Some(CachedFrameGeo {
+            self.workers.cached_frame_geo = Some(CachedFrameGeo {
                 sig,
                 resolved_setup,
                 resolved_fixtures,
@@ -867,7 +919,8 @@ impl ChipCutterApp {
             });
         }
         // Safe: populated immediately above when None or stale
-        self.cached_frame_geo
+        self.workers
+            .cached_frame_geo
             .as_ref()
             .unwrap_or_else(|| unreachable!())
     }
@@ -890,7 +943,7 @@ impl ChipCutterApp {
         let Some(sk) = self.project.sketches.get(sketch_idx) else {
             return;
         };
-        let wf = if let Some(m) = &self.model {
+        let wf = if let Some(m) = &self.assets.model {
             chip_cam::resolve_sketch_world_frame_with_doc(&m.doc, sk, &rs)
         } else {
             chip_cam::resolve_sketch_world_frame(false, sk, &rs)
@@ -914,7 +967,7 @@ impl ChipCutterApp {
         let setup_id = self
             .project
             .setups
-            .get(self.active_setup_idx)
+            .get(self.selection.active_setup_idx)
             .map_or_else(|| "setup_1".to_string(), |s| s.id.clone());
         let n = self.project.sketches.len() + 1;
         let sk = chip_sketch::SketchLayer::new(
@@ -924,10 +977,10 @@ impl ChipCutterApp {
         );
         self.project.sketches.push(sk);
         let sk_idx = self.project.sketches.len() - 1;
-        self.inspector_focus = InspectorFocus::Sketch { sketch_idx: sk_idx };
-        self.selected_sketch_entity_idx = None;
-        self.pick_mode = ViewportPickMode::InspectEntity;
-        self.cached_frame_geo = None;
+        self.selection.inspector_focus = InspectorFocus::Sketch { sketch_idx: sk_idx };
+        self.selection.selected_sketch_entity_idx = None;
+        self.selection.pick_mode = ViewportPickMode::InspectEntity;
+        self.workers.cached_frame_geo = None;
     }
 
     pub(crate) fn trigger_active_setup_simulation(&mut self, egui_ctx: &egui::Context) {
@@ -937,13 +990,14 @@ impl ChipCutterApp {
             return;
         };
         let proj_dir = self
+            .session
             .project_file_path
             .as_deref()
             .and_then(Path::parent)
-            .or(self.bundle_extract_dir.as_deref());
+            .or(self.session.bundle_extract_dir.as_deref());
         self.sim_panel.trigger_simulation(SimTriggerArgs {
             project: &self.project,
-            setup_idx: self.active_setup_idx,
+            setup_idx: self.selection.active_setup_idx,
             cad_doc,
             cad_revision: cad_rev,
             cache: &self.toolpath_cache,
@@ -974,12 +1028,15 @@ impl ChipCutterApp {
         };
         let machine_z = self.active_machine().map(|m| m.travel_mm.z_mm);
         let fix_docs: std::collections::BTreeMap<String, Arc<CadDocument>> = self
+            .assets
             .fixture_models
             .iter()
             .map(|(k, v)| (k.clone(), Arc::clone(v)))
             .collect();
-        self.dispatcher.set_workholding_context(fix_docs, machine_z);
-        let spawned = self.dispatcher.dispatch_operations(
+        self.workers
+            .dispatcher
+            .set_workholding_context(fix_docs, machine_z);
+        let spawned = self.workers.dispatcher.dispatch_operations(
             &mut self.project,
             cad_doc,
             cad_rev,
@@ -1012,13 +1069,13 @@ impl ChipCutterApp {
     }
 
     pub(crate) fn reload_fixture_models_from_disk(&mut self) {
-        self.fixture_models.clear();
+        self.assets.fixture_models.clear();
         let proj_dir = self.active_project_dir().map(Path::to_path_buf);
         for (id, doc) in self.project.load_fixture_cad_documents(proj_dir.as_deref()) {
-            self.fixture_models.insert(id, Arc::new(doc));
+            self.assets.fixture_models.insert(id, Arc::new(doc));
         }
-        self.fixture_models_revision = self.fixture_models_revision.wrapping_add(1);
-        self.cached_frame_geo = None;
+        self.assets.fixture_models_revision = self.assets.fixture_models_revision.wrapping_add(1);
+        self.workers.cached_frame_geo = None;
     }
 
     /// Removes `project.models[model_idx]` with atomic Undo, clearing loaded CAD or fixture state
@@ -1047,7 +1104,7 @@ impl ChipCutterApp {
             }
         }
         if is_primary {
-            self.model = None;
+            self.assets.model = None;
             self.highlight.hovered = None;
             self.highlight.selected = None;
         }
@@ -1057,14 +1114,15 @@ impl ChipCutterApp {
         self.sim_panel.cancel_in_flight();
         self.sim_panel.active_result = None;
         self.gcode_panel.invalidate_preview();
-        self.boundary_preview_cache.clear();
-        self.cached_frame_geo = None;
+        self.workers.boundary_preview_cache.clear();
+        self.workers.cached_frame_geo = None;
         if matches!(
-            self.inspector_focus,
+            self.selection.inspector_focus,
             InspectorFocus::Model { .. } | InspectorFocus::CadEntity
         ) {
-            self.inspector_focus = InspectorFocus::Setup {
+            self.selection.inspector_focus = InspectorFocus::Setup {
                 setup_idx: self
+                    .selection
                     .active_setup_idx
                     .min(self.project.setups.len().saturating_sub(1)),
             };
@@ -1115,7 +1173,7 @@ impl ChipCutterApp {
         };
 
         let sha = compute_sha256_hex(&bytes);
-        let rel_path = portable_model_path(self.project_file_path.as_deref(), &path);
+        let rel_path = portable_model_path(self.session.project_file_path.as_deref(), &path);
         let stem = path
             .file_stem()
             .and_then(|s| s.to_str())
@@ -1158,11 +1216,14 @@ impl ChipCutterApp {
         for op in &mut self.project.setups[setup_idx].operations {
             op.mark_dirty();
         }
-        self.selected_fixture_idx = Some(self.project.setups[setup_idx].fixtures.len() - 1);
+        self.selection.selected_fixture_idx =
+            Some(self.project.setups[setup_idx].fixtures.len() - 1);
         self.highlight.show_fixtures = true;
-        self.fixture_models.insert(model_id, Arc::new(cad_doc));
-        self.fixture_models_revision = self.fixture_models_revision.wrapping_add(1);
-        self.cached_frame_geo = None;
+        self.assets
+            .fixture_models
+            .insert(model_id, Arc::new(cad_doc));
+        self.assets.fixture_models_revision = self.assets.fixture_models_revision.wrapping_add(1);
+        self.workers.cached_frame_geo = None;
         self.logs
             .push(format!("Imported 3D fixture model '{stem}'."));
     }
@@ -1172,13 +1233,14 @@ impl ChipCutterApp {
             return false;
         };
         let needs_rebuild = self
+            .assets
             .model
             .as_ref()
             .is_some_and(|m| m.applied_transform != desired_xf);
         if !needs_rebuild {
             return false;
         }
-        let Some(loaded) = self.model.as_mut() else {
+        let Some(loaded) = self.assets.model.as_mut() else {
             return false;
         };
         let new_doc = if desired_xf.is_identity() {
@@ -1190,17 +1252,19 @@ impl ChipCutterApp {
         loaded.topo = TopologyGraph::build(&new_doc);
         loaded.doc = new_doc;
         loaded.applied_transform = desired_xf;
-        loaded.revision = self.next_revision;
-        self.next_revision += 1;
+        loaded.revision = self.assets.next_revision;
+        self.assets.next_revision += 1;
 
         let new_rev = loaded.revision;
-        self.dispatcher.cancel_stale_jobs(&self.project, new_rev);
+        self.workers
+            .dispatcher
+            .cancel_stale_jobs(&self.project, new_rev);
         self.sim_panel.cancel_in_flight();
         self.sim_panel.active_result = None;
         self.gcode_panel.invalidate_preview();
         self.highlight.hovered = None;
         self.highlight.selected = None;
-        self.cached_frame_geo = None;
+        self.workers.cached_frame_geo = None;
         self.refresh_dependent_expressions();
         true
     }
@@ -1213,7 +1277,7 @@ impl ChipCutterApp {
             return false;
         };
         let desired_unit = entry.unit_override;
-        let Some(loaded) = &self.model else {
+        let Some(loaded) = &self.assets.model else {
             return false;
         };
         if loaded.doc.meshes.is_empty() && !is_mesh_path(Path::new(&entry.path)) {
@@ -1245,16 +1309,16 @@ impl ChipCutterApp {
     }
 
     pub(crate) fn sync_loaded_model_unit_override(&mut self, egui_ctx: &egui::Context) -> bool {
-        if self.loading_in_flight {
+        if self.workers.loading_in_flight {
             return false;
         }
         let Some(desired_unit) = self.project.primary_part_model().map(|m| m.unit_override) else {
             return false;
         };
-        let needs_reload = self
-            .model
-            .as_ref()
-            .is_some_and(|m| !m.doc.meshes.is_empty() && m.applied_unit_override != desired_unit);
+        let needs_reload =
+            self.assets.model.as_ref().is_some_and(|m| {
+                !m.doc.meshes.is_empty() && m.applied_unit_override != desired_unit
+            });
         if !needs_reload {
             return false;
         }
@@ -1262,11 +1326,13 @@ impl ChipCutterApp {
     }
 
     pub(crate) fn is_project_dirty(&self) -> bool {
-        self.clean_undo_len != Some(self.history.undo_len())
+        self.session.clean_undo_len != Some(self.history.undo_len())
     }
 
     pub(crate) fn should_intercept_close(&self) -> bool {
-        self.is_project_dirty() && !self.allow_close_without_prompt && self.self_test.is_none()
+        self.is_project_dirty()
+            && !self.session.allow_close_without_prompt
+            && self.self_test.is_none()
     }
 
     pub(crate) fn request_app_close(&mut self, ctx: &egui::Context) {
@@ -1289,15 +1355,17 @@ impl ChipCutterApp {
             self.sync_active_machine_tools();
             self.sync_loaded_model_transform();
             if let Some((_, cad_rev)) = self.effective_cad_arc() {
-                self.dispatcher.cancel_stale_jobs(&self.project, cad_rev);
-                let inflight = self.dispatcher.in_flight_ids();
+                self.workers
+                    .dispatcher
+                    .cancel_stale_jobs(&self.project, cad_rev);
+                let inflight = self.workers.dispatcher.in_flight_ids();
                 self.toolpath_cache.reconcile_project_statuses(
                     &mut self.project,
                     cad_rev,
                     &inflight,
                 );
             }
-            self.cached_frame_geo = None;
+            self.workers.cached_frame_geo = None;
             self.logs.push(format!("Undo: {lbl}"));
         }
     }
@@ -1307,15 +1375,17 @@ impl ChipCutterApp {
             self.sync_active_machine_tools();
             self.sync_loaded_model_transform();
             if let Some((_, cad_rev)) = self.effective_cad_arc() {
-                self.dispatcher.cancel_stale_jobs(&self.project, cad_rev);
-                let inflight = self.dispatcher.in_flight_ids();
+                self.workers
+                    .dispatcher
+                    .cancel_stale_jobs(&self.project, cad_rev);
+                let inflight = self.workers.dispatcher.in_flight_ids();
                 self.toolpath_cache.reconcile_project_statuses(
                     &mut self.project,
                     cad_rev,
                     &inflight,
                 );
             }
-            self.cached_frame_geo = None;
+            self.workers.cached_frame_geo = None;
             self.logs.push(format!("Redo: {lbl}"));
         }
     }
@@ -1373,13 +1443,13 @@ mod phase21_ui_tests {
             "Setup 2 — Flip Op",
             WorkOffsetSlot::G55,
         ));
-        app.active_setup_idx = 1;
+        app.selection.active_setup_idx = 1;
 
         app.add_standard_operation(OperationKind::Contour2D);
         assert_eq!(app.project.setups[0].operations.len(), 0);
         assert_eq!(app.project.setups[1].operations.len(), 1);
         assert_eq!(
-            app.inspector_focus,
+            app.selection.inspector_focus,
             InspectorFocus::Operation {
                 setup_idx: 1,
                 op_idx: 0

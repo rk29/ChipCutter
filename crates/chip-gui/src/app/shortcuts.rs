@@ -5,8 +5,8 @@ impl ChipCutterApp {
         let is_dirty_doc = self.is_project_dirty();
         let desired_title =
             crate::panels::about::format_window_title(&self.project.project_name, is_dirty_doc);
-        if desired_title != self.last_window_title {
-            self.last_window_title = desired_title.clone();
+        if desired_title != self.session.last_window_title {
+            self.session.last_window_title = desired_title.clone();
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(desired_title));
         }
     }
@@ -69,7 +69,7 @@ impl ChipCutterApp {
         }
 
         if gen_shortcut {
-            self.trigger_generate_dirty(Some(self.active_setup_idx), None);
+            self.trigger_generate_dirty(Some(self.selection.active_setup_idx), None);
         }
         if reload_shortcut {
             self.reload_active_step_model(ctx);
@@ -87,19 +87,20 @@ impl ChipCutterApp {
             self.open_project_dialog(ctx);
         }
         if esc_key {
-            if self.sketch_author_start_xy.take().is_some() {
+            if self.selection.sketch_author_start_xy.take().is_some() {
                 // Cancelled first rubber-band click while staying in SketchAuthor tool
-            } else if self.pick_mode != ViewportPickMode::InspectEntity {
-                if self.pick_mode == ViewportPickMode::Measure {
-                    self.measure_state.reset_all();
+            } else if self.selection.pick_mode != ViewportPickMode::InspectEntity {
+                if self.selection.pick_mode == ViewportPickMode::Measure {
+                    self.selection.measure_state.reset_all();
                 }
-                self.pick_mode = ViewportPickMode::InspectEntity;
-                self.geometry_pick_target = crate::panels::GeometryPickTarget::CuttingArea;
-                self.editing_shared_avoid_id = None;
+                self.selection.pick_mode = ViewportPickMode::InspectEntity;
+                self.selection.geometry_pick_target =
+                    crate::panels::GeometryPickTarget::CuttingArea;
+                self.selection.editing_shared_avoid_id = None;
                 self.highlight.preview_tab_marker_wcs = None;
-            } else if self.dispatcher.is_busy() {
-                let elapsed = self.dispatcher.batch_elapsed();
-                let n = self.dispatcher.cancel_all();
+            } else if self.workers.dispatcher.is_busy() {
+                let elapsed = self.workers.dispatcher.batch_elapsed();
+                let n = self.workers.dispatcher.cancel_all();
                 if let Some(d) = elapsed {
                     self.logs.push(format!(
                         "Cancelled {n} in-flight generation job(s) after {}.",
@@ -131,8 +132,8 @@ impl ChipCutterApp {
                     cmd && i.key_pressed(egui::Key::ArrowDown),
                     !cmd && (i.key_pressed(egui::Key::Delete)
                         || (i.key_pressed(egui::Key::Backspace)
-                            && self.pick_mode == ViewportPickMode::InspectEntity
-                            && self.sketch_author_start_xy.is_none())),
+                            && self.selection.pick_mode == ViewportPickMode::InspectEntity
+                            && self.selection.sketch_author_start_xy.is_none())),
                 )
             });
             if dup_op {

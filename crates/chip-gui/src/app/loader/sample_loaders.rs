@@ -28,7 +28,7 @@ impl ChipCutterApp {
         } else {
             LoadPurpose::SeedBlankSample
         };
-        let tx = self.job_tx.clone();
+        let tx = self.workers.job_tx.clone();
         rayon::spawn(move || {
             let t0 = Instant::now();
             let res = match sample_id.generate_asset_bytes() {
@@ -79,7 +79,7 @@ impl ChipCutterApp {
     ) {
         let spec = sample_id.spec();
         self.prepare_for_project_replacement(None, None);
-        self.project_file_path = None;
+        self.session.project_file_path = None;
         self.project.machine_id = None;
         self.sync_active_machine_tools();
         if let Ok(proj) = sample_id.build_project(&SampleBuildContext {
@@ -98,11 +98,11 @@ impl ChipCutterApp {
                 op_idx,
                 geometry_tab,
             } => {
-                self.inspector_focus = InspectorFocus::Operation {
+                self.selection.inspector_focus = InspectorFocus::Operation {
                     setup_idx: 0,
                     op_idx,
                 };
-                self.op_tab = if geometry_tab {
+                self.selection.op_tab = if geometry_tab {
                     OperationTab::Geometry
                 } else {
                     OperationTab::Passes
@@ -112,15 +112,15 @@ impl ChipCutterApp {
                 sketch_idx,
                 entity_idx,
             } => {
-                self.inspector_focus = InspectorFocus::Sketch { sketch_idx };
-                self.selected_sketch_entity_idx = Some(entity_idx);
+                self.selection.inspector_focus = InspectorFocus::Sketch { sketch_idx };
+                self.selection.selected_sketch_entity_idx = Some(entity_idx);
             }
             _ => {}
         }
         self.refresh_dependent_expressions();
         self.fit_scene_to_viewport();
         self.logs.push(spec.load_status_message.to_string());
-        self.auto_sim_after_gen = spec.auto_generate_and_sim;
+        self.overlay_prefs.auto_sim_after_gen = spec.auto_generate_and_sim;
         if spec.auto_generate_and_sim {
             self.trigger_generate_dirty(None, None);
         }
@@ -251,7 +251,7 @@ impl ChipCutterApp {
             } else {
                 None
             };
-        let tx = self.job_tx.clone();
+        let tx = self.workers.job_tx.clone();
         rayon::spawn(move || {
             let t0 = Instant::now();
             let res = match sample_revised_part_pair_step() {

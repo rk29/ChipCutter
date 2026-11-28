@@ -62,23 +62,25 @@ impl ChipCutterApp {
             ));
         }
 
-        self.dispatcher.reset();
-        self.external_step_modified = false;
-        let was_model_empty = self.model.is_none();
+        self.workers.dispatcher.reset();
+        self.session.external_step_modified = false;
+        let was_model_empty = self.assets.model.is_none();
         let mut fit_camera = true;
         let mut auto_generate_and_sim = false;
 
         match purpose {
             LoadPurpose::SeedBlankSample => {
                 self.prepare_for_project_replacement(None, None);
-                self.project_file_path = None;
+                self.session.project_file_path = None;
                 let mut proj = ProjectDocument::new("Untitled Job");
-                proj.display_units = self.prefs.default_units;
-                if self.prefs.default_machine_id != chip_machines::DEFAULT_MACHINE_ID
+                proj.display_units = self.session.prefs.default_units;
+                if self.session.prefs.default_machine_id != chip_machines::DEFAULT_MACHINE_ID
                     && let Some(m) = self
                         .machines
                         .iter()
-                        .find(|m| m.id.eq_ignore_ascii_case(&self.prefs.default_machine_id))
+                        .find(|m| {
+                            m.id.eq_ignore_ascii_case(&self.session.prefs.default_machine_id)
+                        })
                         .cloned()
                 {
                     proj.apply_machine_defaults(&m, true);
@@ -97,7 +99,7 @@ impl ChipCutterApp {
             LoadPurpose::SeedSample(sample_id) => {
                 let spec = sample_id.spec();
                 self.prepare_for_project_replacement(None, None);
-                self.project_file_path = None;
+                self.session.project_file_path = None;
                 self.project.machine_id = None;
                 self.sync_active_machine_tools();
                 match sample_id.build_project(&SampleBuildContext {
@@ -124,7 +126,7 @@ impl ChipCutterApp {
                     self.highlight.show_fixtures = true;
                 }
                 if spec.hide_27pt_dots {
-                    self.show_27pt_dots = false;
+                    self.overlay_prefs.show_27pt_dots = false;
                 }
                 let op_count = self
                     .project
@@ -136,33 +138,33 @@ impl ChipCutterApp {
                         op_idx,
                         geometry_tab,
                     } if op_idx < op_count => {
-                        self.inspector_focus = InspectorFocus::Operation {
+                        self.selection.inspector_focus = InspectorFocus::Operation {
                             setup_idx: 0,
                             op_idx,
                         };
-                        self.op_tab = if geometry_tab {
+                        self.selection.op_tab = if geometry_tab {
                             OperationTab::Geometry
                         } else {
                             OperationTab::Passes
                         };
                     }
                     SampleFocusHint::LastOperationPasses if op_count > 0 => {
-                        self.inspector_focus = InspectorFocus::Operation {
+                        self.selection.inspector_focus = InspectorFocus::Operation {
                             setup_idx: 0,
                             op_idx: op_count.saturating_sub(1),
                         };
-                        self.op_tab = OperationTab::Passes;
+                        self.selection.op_tab = OperationTab::Passes;
                     }
                     SampleFocusHint::SetupFixtures => {
-                        self.inspector_focus = InspectorFocus::Setup { setup_idx: 0 };
-                        self.setup_tab = SetupTab::Fixtures;
+                        self.selection.inspector_focus = InspectorFocus::Setup { setup_idx: 0 };
+                        self.selection.setup_tab = SetupTab::Fixtures;
                     }
                     SampleFocusHint::SketchEntity {
                         sketch_idx,
                         entity_idx,
                     } => {
-                        self.inspector_focus = InspectorFocus::Sketch { sketch_idx };
-                        self.selected_sketch_entity_idx = Some(entity_idx);
+                        self.selection.inspector_focus = InspectorFocus::Sketch { sketch_idx };
+                        self.selection.selected_sketch_entity_idx = Some(entity_idx);
                     }
                     _ => {
                         if op_count == 0
@@ -172,8 +174,8 @@ impl ChipCutterApp {
                                     | SampleFocusHint::Operation { .. }
                             )
                         {
-                            self.inspector_focus = InspectorFocus::Setup { setup_idx: 0 };
-                            self.setup_tab = SetupTab::Wcs;
+                            self.selection.inspector_focus = InspectorFocus::Setup { setup_idx: 0 };
+                            self.selection.setup_tab = SetupTab::Wcs;
                         }
                     }
                 }
@@ -182,13 +184,13 @@ impl ChipCutterApp {
             LoadPurpose::FreshImport { update_model_entry } => {
                 self.sim_panel.reset_for_new_project();
                 self.gcode_panel.invalidate_preview();
-                self.auto_sim_after_gen = false;
-                self.last_reload_banner = None;
+                self.overlay_prefs.auto_sim_after_gen = false;
+                self.session.last_reload_banner = None;
                 self.highlight.preview_tab_marker_wcs = None;
                 let init_xf = initial_transform.unwrap_or(chip_cad::ModelTransform::IDENTITY);
                 if update_model_entry {
                     let stored_path = if let Some(model_path) = &source_path {
-                        portable_model_path(self.project_file_path.as_deref(), model_path)
+                        portable_model_path(self.session.project_file_path.as_deref(), model_path)
                     } else {
                         doc.source_name.clone()
                     };
@@ -225,14 +227,14 @@ impl ChipCutterApp {
             LoadPurpose::ReloadMeshUnits => {
                 self.sim_panel.reset_for_new_project();
                 self.gcode_panel.invalidate_preview();
-                self.auto_sim_after_gen = false;
+                self.overlay_prefs.auto_sim_after_gen = false;
                 self.highlight.preview_tab_marker_wcs = None;
                 fit_camera = true;
             }
             LoadPurpose::ReloadRebind { update_path } => {
                 if let Some(seeded) = pre_seeded_project {
                     self.prepare_for_project_replacement(None, None);
-                    self.project_file_path = None;
+                    self.session.project_file_path = None;
                     self.project = seeded;
                     self.sync_active_machine_tools();
                 }
@@ -283,9 +285,9 @@ impl ChipCutterApp {
         self.highlight.hovered = None;
         self.highlight.selected = None;
 
-        let rev = self.next_revision;
-        self.next_revision += 1;
-        self.model = Some(LoadedModelState {
+        let rev = self.assets.next_revision;
+        self.assets.next_revision += 1;
+        self.assets.model = Some(LoadedModelState {
             raw_doc,
             applied_transform,
             applied_unit_override: unit_override,
@@ -296,11 +298,11 @@ impl ChipCutterApp {
             source_path,
             revision: rev,
         });
-        self.cached_frame_geo = None;
+        self.workers.cached_frame_geo = None;
         self.refresh_dependent_expressions();
 
         if auto_generate_and_sim {
-            self.auto_sim_after_gen = true;
+            self.overlay_prefs.auto_sim_after_gen = true;
             self.trigger_generate_dirty(None, None);
         }
     }
@@ -316,7 +318,7 @@ impl ChipCutterApp {
         self.history
             .record_before_edit("Reload STEP Model", None, &self.project);
         let new_rel = if update_path {
-            source_path.map(|sp| portable_model_path(self.project_file_path.as_deref(), sp))
+            source_path.map(|sp| portable_model_path(self.session.project_file_path.as_deref(), sp))
         } else {
             None
         };
@@ -369,16 +371,16 @@ impl ChipCutterApp {
             }
         }
         if let Some((si, oi)) = first_repick {
-            self.active_setup_idx = si;
-            self.inspector_focus = InspectorFocus::Operation {
+            self.selection.active_setup_idx = si;
+            self.selection.inspector_focus = InspectorFocus::Operation {
                 setup_idx: si,
                 op_idx: oi,
             };
-            self.op_tab = OperationTab::Geometry;
+            self.selection.op_tab = OperationTab::Geometry;
         }
         self.sim_panel.reset_for_new_project();
         self.gcode_panel.invalidate_preview();
-        self.auto_sim_after_gen = false;
-        self.last_reload_banner = Some((summary, has_warn));
+        self.overlay_prefs.auto_sim_after_gen = false;
+        self.session.last_reload_banner = Some((summary, has_warn));
     }
 }

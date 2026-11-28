@@ -32,10 +32,10 @@ impl ChipCutterApp {
                     self.draw_help_menu(ui);
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if self.loading_in_flight {
+                        if self.workers.loading_in_flight {
                             ui.label("Loading 3D Model…");
                             ui.spinner();
-                        } else if let Some(m) = &self.model {
+                        } else if let Some(m) = &self.assets.model {
                             if let Some(mesh) = m.doc.meshes.first() {
                                 ui.weak(format!(
                                     "{} · {} tris · {}",
@@ -85,10 +85,10 @@ impl ChipCutterApp {
                 self.open_project_dialog(ctx);
             }
             ui.menu_button("Open Recent", |ui| {
-                if self.prefs.recent_files.is_empty() {
+                if self.session.prefs.recent_files.is_empty() {
                     ui.weak("No recent projects.");
                 } else {
-                    let recents = self.prefs.recent_files.clone();
+                    let recents = self.session.prefs.recent_files.clone();
                     for p in recents {
                         let exists = p.exists();
                         let lbl = p.display().to_string();
@@ -108,7 +108,7 @@ impl ChipCutterApp {
                         .on_hover_text("Remove all entries from the Open Recent menu")
                         .clicked()
                     {
-                        self.prefs.clear_recent_files();
+                        self.session.prefs.clear_recent_files();
                         ui.close();
                     }
                 }
@@ -191,7 +191,7 @@ impl ChipCutterApp {
             }
             if ui
                 .add_enabled(
-                    self.model.is_some(),
+                    self.assets.model.is_some(),
                     egui::Button::new("Reload STEP Model (Ctrl+R)"),
                 )
                 .on_hover_text("Re-read the active STEP model from disk and associatively re-bind CAM selections")
@@ -203,7 +203,7 @@ impl ChipCutterApp {
             }
             if ui
                 .add_enabled(
-                    self.model.is_some() || self.project.primary_part_model().is_some(),
+                    self.assets.model.is_some() || self.project.primary_part_model().is_some(),
                     egui::Button::new("Replace STEP Model (Associative Re-Bind)…"),
                 )
                 .on_hover_text("Swap or locate the active project's STEP file while preserving CAM operations and geometry bindings")
@@ -271,7 +271,7 @@ impl ChipCutterApp {
                 ui.close();
             }
 
-            let focused_op = match self.inspector_focus {
+            let focused_op = match self.selection.inspector_focus {
                 InspectorFocus::Operation { setup_idx, op_idx }
                     if setup_idx < self.project.setups.len()
                         && op_idx < self.project.setups[setup_idx].operations.len() =>
@@ -282,7 +282,7 @@ impl ChipCutterApp {
             };
             let can_delete = focused_op.is_some()
                 || matches!(
-                    (self.inspector_focus, self.selected_sketch_entity_idx),
+                    (self.selection.inspector_focus, self.selection.selected_sketch_entity_idx),
                     (InspectorFocus::Sketch { sketch_idx }, Some(e_idx))
                         if sketch_idx < self.project.sketches.len()
                             && e_idx < self.project.sketches[sketch_idx].entities.len()
@@ -385,9 +385,9 @@ impl ChipCutterApp {
                     format!("Setup {n} — Op {n}"),
                     WorkOffsetSlot::G55,
                 ));
-                self.active_setup_idx = self.project.setups.len() - 1;
-                self.inspector_focus = InspectorFocus::Setup {
-                    setup_idx: self.active_setup_idx,
+                self.selection.active_setup_idx = self.project.setups.len() - 1;
+                self.selection.inspector_focus = InspectorFocus::Setup {
+                    setup_idx: self.selection.active_setup_idx,
                 };
                 ui.close();
             }
@@ -401,15 +401,15 @@ impl ChipCutterApp {
             }
             if ui
                 .add_enabled(
-                    self.model.is_some(),
+                    self.assets.model.is_some(),
                     egui::Button::new("+ New 2D Sketch on 3D Face…"),
                 )
                 .on_hover_text("Pick a planar 3D CAD face in the viewport to host a new 2D sketch plane")
                 .on_disabled_hover_text("Import a 3D STEP model first to attach a sketch to a 3D face")
                 .clicked()
             {
-                self.pick_mode = ViewportPickMode::PickSketchHostFace {
-                    setup_idx: self.active_setup_idx,
+                self.selection.pick_mode = ViewportPickMode::PickSketchHostFace {
+                    setup_idx: self.selection.active_setup_idx,
                 };
                 ui.close();
             }
@@ -429,7 +429,7 @@ impl ChipCutterApp {
             {
                 self.modals
                     .flip_jig_wizard
-                    .open_for_setup(self.active_setup_idx);
+                    .open_for_setup(self.selection.active_setup_idx);
                 ui.close();
             }
             if ui
@@ -439,7 +439,7 @@ impl ChipCutterApp {
             {
                 self.modals
                     .soft_jaw_wizard
-                    .open_for_setup(self.active_setup_idx);
+                    .open_for_setup(self.selection.active_setup_idx);
                 ui.close();
             }
             ui.separator();
@@ -464,7 +464,7 @@ impl ChipCutterApp {
                 let rep = validate_project(
                     &self.project,
                     self.active_project_dir(),
-                    self.model.as_ref().map(|m| m.doc.as_ref()),
+                    self.assets.model.as_ref().map(|m| m.doc.as_ref()),
                 );
                 self.logs.push(format!(
                     "Validation check: {} error(s), {} warning(s).",
@@ -487,7 +487,7 @@ impl ChipCutterApp {
                 .on_hover_text("Compute or refresh all out-of-date toolpaths in the active Setup")
                 .clicked()
             {
-                self.trigger_generate_dirty(Some(self.active_setup_idx), None);
+                self.trigger_generate_dirty(Some(self.selection.active_setup_idx), None);
                 ui.close();
             }
             if ui
@@ -498,14 +498,14 @@ impl ChipCutterApp {
                 self.trigger_generate_dirty(None, None);
                 ui.close();
             }
-            if self.dispatcher.is_busy()
+            if self.workers.dispatcher.is_busy()
                 && ui
                     .button("Cancel Generation (Esc)")
                     .on_hover_text("Abort all currently running background toolpath calculations")
                     .clicked()
             {
-                let elapsed = self.dispatcher.batch_elapsed();
-                let n = self.dispatcher.cancel_all();
+                let elapsed = self.workers.dispatcher.batch_elapsed();
+                let n = self.workers.dispatcher.cancel_all();
                 if let Some(d) = elapsed {
                     self.logs.push(format!(
                         "Cancelled {n} in-flight generation job(s) after {}.",
@@ -659,14 +659,14 @@ impl ChipCutterApp {
             }
             ui.separator();
             let proj_dir = self
-                .project_file_path
+                .session.project_file_path
                 .as_deref()
                 .and_then(Path::parent)
-                .or(self.bundle_extract_dir.as_deref());
+                .or(self.session.bundle_extract_dir.as_deref());
             self.gcode_panel.ensure_profiles_loaded(proj_dir);
-            if self.active_setup_idx < self.project.setups.len() {
+            if self.selection.active_setup_idx < self.project.setups.len() {
                 ui.label("Active Setup Post Profile:");
-                let cur_id = self.project.setups[self.active_setup_idx]
+                let cur_id = self.project.setups[self.selection.active_setup_idx]
                     .post_profile
                     .clone();
                 let profiles: Vec<(String, String)> = self
@@ -687,7 +687,7 @@ impl ChipCutterApp {
                     {
                         self.history
                             .record_before_edit("Change Post Profile", None, &self.project);
-                        self.project.setups[self.active_setup_idx].post_profile = pid;
+                        self.project.setups[self.selection.active_setup_idx].post_profile = pid;
                         self.gcode_panel.invalidate_preview();
                         ui.close();
                     }
@@ -715,7 +715,7 @@ impl ChipCutterApp {
             ui.checkbox(&mut self.highlight.show_rapids, "Show Rapid Moves (G0)")
                 .on_hover_text("Toggle dashed yellow rapid transit lines (G0) between cuts");
             ui.checkbox(
-                &mut self.show_all_setup_toolpaths,
+                &mut self.overlay_prefs.show_all_setup_toolpaths,
                 "Show All Operations in Active Setup",
             )
             .on_hover_text("When checked, display toolpaths for every visible operation in the Setup; when unchecked, show only the selected operation");
@@ -730,7 +730,7 @@ impl ChipCutterApp {
             ui.checkbox(&mut self.highlight.ghost_part, "Ghost Part Translucency")
                 .on_hover_text("Render the 3D CAD solid semi-transparent so internal pockets, holes, and toolpaths remain visible");
             ui.checkbox(
-                &mut self.show_z_planes,
+                &mut self.overlay_prefs.show_z_planes,
                 "Show Z-Height Planes in Heights Tab",
             )
             .on_hover_text("Render color-coded Clearance, Retract, Top, and Bottom Z planes when editing Heights");
@@ -739,7 +739,7 @@ impl ChipCutterApp {
                 "Show Reach / Min-R Heatmap",
             )
             .on_hover_text("Highlight tight internal fillets, blocked narrow slots, and deep pockets exceeding flute or stickout reach");
-            let mut measure_on = self.pick_mode == ViewportPickMode::Measure;
+            let mut measure_on = self.selection.pick_mode == ViewportPickMode::Measure;
             if ui
                 .checkbox(&mut measure_on, "Measure Tool (M)")
                 .on_hover_text("Click-to-Measure distances, hole diameters, Z depths, and dihedral angles in active Setup WCS")

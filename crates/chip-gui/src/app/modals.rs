@@ -205,7 +205,7 @@ impl ChipCutterApp {
             self.project
                 .apply_machine_defaults(&target_machine, sync_setups);
             self.sync_active_machine_tools();
-            self.cached_frame_geo = None;
+            self.workers.cached_frame_geo = None;
             self.logs.push(format!(
                 "[MACHINES] Switched project machine to '{}'.",
                 target_machine.name
@@ -287,7 +287,7 @@ impl ChipCutterApp {
         }
 
         let active_mid_now = self.project.effective_machine_id().to_string();
-        let default_pref_mid = self.prefs.default_machine_id.clone();
+        let default_pref_mid = self.session.prefs.default_machine_id.clone();
         let mm_actions = self.modals.machine_manager.show(
             ctx,
             &mut self.machines,
@@ -299,7 +299,7 @@ impl ChipCutterApp {
             self.request_machine_switch(mid, sync_setups);
         }
         if let Some(def_mid) = mm_actions.set_default_machine_id {
-            self.prefs.default_machine_id = def_mid;
+            self.session.prefs.default_machine_id = def_mid;
         }
         if let Some(tl_mid) = mm_actions.open_tool_library_for_machine {
             self.project.machine_id = Some(tl_mid);
@@ -316,7 +316,7 @@ impl ChipCutterApp {
             let active_post_id = self
                 .project
                 .setups
-                .get(self.active_setup_idx)
+                .get(self.selection.active_setup_idx)
                 .map_or_else(|| "grbl".to_string(), |s| s.post_profile.clone());
             let post_actions = self.modals.post_profile_inspector.show(
                 ctx,
@@ -325,11 +325,11 @@ impl ChipCutterApp {
                 &mut self.logs,
             );
             if let Some(new_pid) = post_actions.select_setup_post_id
-                && self.active_setup_idx < self.project.setups.len()
+                && self.selection.active_setup_idx < self.project.setups.len()
             {
                 self.history
                     .record_before_edit("Change Post Profile", None, &self.project);
-                self.project.setups[self.active_setup_idx].post_profile = new_pid;
+                self.project.setups[self.selection.active_setup_idx].post_profile = new_pid;
                 self.gcode_panel.invalidate_preview();
             }
             if post_actions.profiles_modified {
@@ -348,7 +348,7 @@ impl ChipCutterApp {
                 commit.prune_replaced_unused,
             );
             self.sync_active_machine_tools();
-            self.cached_frame_geo = None;
+            self.workers.cached_frame_geo = None;
             self.logs.push(format!(
                 "[MACHINES] Switched to '{}': swapped {} tool(s), updated {} op(s), removed {} unused tool(s).",
                 commit.target_machine.name,
@@ -363,7 +363,7 @@ impl ChipCutterApp {
             &mut self.modals.project_properties,
             ProjectPropertiesCtx {
                 project: &self.project,
-                project_file_path: self.project_file_path.as_deref(),
+                project_file_path: self.session.project_file_path.as_deref(),
                 machines: &self.machines,
             },
         );
@@ -376,12 +376,12 @@ impl ChipCutterApp {
             SettingsModalCtx {
                 theme: self.theme,
                 project_units: self.project.display_units,
-                prefs: &mut self.prefs,
+                prefs: &mut self.session.prefs,
                 mouse_preset: &mut self.camera.mouse_preset,
                 orbit_mode: &mut self.camera.orbit_mode,
                 orthographic: self.camera.projection.is_orthographic(),
-                show_z_planes: &mut self.show_z_planes,
-                show_all_setup_toolpaths: &mut self.show_all_setup_toolpaths,
+                show_z_planes: &mut self.overlay_prefs.show_z_planes,
+                show_all_setup_toolpaths: &mut self.overlay_prefs.show_all_setup_toolpaths,
                 show_grid: &mut self.highlight.show_grid,
                 sim_engine: &mut self.sim_panel.engine,
                 sim_resolution: &mut self.sim_panel.resolution,
@@ -410,7 +410,7 @@ impl ChipCutterApp {
         }
         if settings_actions.reset_workspace_layout {
             self.tree = crate::layout::create_default_workspace_tree();
-            self.prefs.layout_shares = Default::default();
+            self.session.prefs.layout_shares = Default::default();
         }
         if settings_actions.sim_rerun_requested
             && !self.sim_panel.is_busy()
@@ -443,13 +443,13 @@ impl ChipCutterApp {
             );
         }
 
-        let proj_path_clone = self.project_file_path.clone();
+        let proj_path_clone = self.session.project_file_path.clone();
         if let Some(vec_act) = self.modals.vector_import.show(
             ctx,
             VectorModalCtx {
                 project: &mut self.project,
                 project_file_path: proj_path_clone.as_deref(),
-                active_setup_idx: self.active_setup_idx,
+                active_setup_idx: self.selection.active_setup_idx,
                 global_tools: &self.global_tools,
                 history: &mut self.history,
                 logs: &mut self.logs,
@@ -457,15 +457,15 @@ impl ChipCutterApp {
         ) {
             match vec_act {
                 VectorModalAction::AppendedSketch { .. } => {
-                    self.cached_frame_geo = None;
-                    if self.model.is_none() {
+                    self.workers.cached_frame_geo = None;
+                    if self.assets.model.is_none() {
                         self.fit_scene_to_viewport();
                     }
                 }
                 VectorModalAction::CreatedPure2dJob { .. } => {
                     self.prepare_for_project_replacement(None, None);
-                    self.project_file_path = None;
-                    self.inspector_focus = InspectorFocus::Sketch { sketch_idx: 0 };
+                    self.session.project_file_path = None;
+                    self.selection.inspector_focus = InspectorFocus::Sketch { sketch_idx: 0 };
                     self.sync_active_machine_tools();
                     self.refresh_dependent_expressions();
                     self.fit_scene_to_viewport();
@@ -475,22 +475,23 @@ impl ChipCutterApp {
 
         // Workholding Automation Wizards (Flip-Jig Dowel Pins & Auto Soft-Jaws)
         let wizard_cad = self
+            .assets
             .model
             .as_ref()
             .map(|m| std::sync::Arc::clone(&m.doc))
-            .unwrap_or_else(|| std::sync::Arc::clone(&self.empty_cad));
+            .unwrap_or_else(|| std::sync::Arc::clone(&self.assets.empty_cad));
         if let Some(res) = self.modals.flip_jig_wizard.show(
             ctx,
             &mut self.project,
             wizard_cad.as_ref(),
             &mut self.history,
         ) {
-            self.active_setup_idx = res.new_setup_idx;
-            self.inspector_focus = InspectorFocus::Setup {
+            self.selection.active_setup_idx = res.new_setup_idx;
+            self.selection.inspector_focus = InspectorFocus::Setup {
                 setup_idx: res.new_setup_idx,
             };
             self.highlight.show_fixtures = true;
-            self.cached_frame_geo = None;
+            self.workers.cached_frame_geo = None;
             self.logs.push(res.log_message);
         }
         if let Some(res) = self.modals.soft_jaw_wizard.show(
@@ -500,9 +501,9 @@ impl ChipCutterApp {
             &mut self.history,
         ) {
             if let Some(s_idx) = res.new_setup_idx {
-                self.active_setup_idx = s_idx;
-                self.inspector_focus = InspectorFocus::Setup { setup_idx: s_idx };
-                self.cached_frame_geo = None;
+                self.selection.active_setup_idx = s_idx;
+                self.selection.inspector_focus = InspectorFocus::Setup { setup_idx: s_idx };
+                self.workers.cached_frame_geo = None;
             }
             self.logs.push(res.log_message);
         }
@@ -510,7 +511,9 @@ impl ChipCutterApp {
 
     pub(crate) fn show_overlay_modals(&mut self, ctx: &egui::Context) {
         // Welcome Overlay, Sample Projects Gallery, Command Palette (Ctrl+K), & Shortcut Cheat-Sheet (F1 / ?)
-        if let Some(w_act) = show_welcome_modal(ctx, &mut self.modals.welcome, &mut self.prefs) {
+        if let Some(w_act) =
+            show_welcome_modal(ctx, &mut self.modals.welcome, &mut self.session.prefs)
+        {
             match w_act {
                 WelcomeGalleryAction::OpenProjectDialog => self.open_project_dialog(ctx),
                 WelcomeGalleryAction::ImportStepDialog => self.open_step_dialog(ctx),
@@ -533,16 +536,16 @@ impl ChipCutterApp {
                     self.open_any_path(&path, ctx.clone());
                 }
                 WelcomeGalleryAction::ClearRecentFiles => {
-                    self.prefs.clear_recent_files();
+                    self.session.prefs.clear_recent_files();
                     if self.self_test.is_none() {
-                        let _ = save_prefs(&self.prefs);
-                        self.last_saved_prefs = self.prefs.clone();
+                        let _ = save_prefs(&self.session.prefs);
+                        self.session.last_saved_prefs = self.session.prefs.clone();
                     }
                 }
                 WelcomeGalleryAction::PrefsChanged => {
                     if self.self_test.is_none() {
-                        let _ = save_prefs(&self.prefs);
-                        self.last_saved_prefs = self.prefs.clone();
+                        let _ = save_prefs(&self.session.prefs);
+                        self.session.last_saved_prefs = self.session.prefs.clone();
                     }
                 }
             }
@@ -592,7 +595,7 @@ impl ChipCutterApp {
                     .size(14.0),
                 );
                 ui.add_space(4.0);
-                if let Some(path) = &self.project_file_path {
+                if let Some(path) = &self.session.project_file_path {
                     ui.label(
                         egui::RichText::new(format!("Target file: {}", path.display()))
                             .small()
@@ -627,7 +630,7 @@ impl ChipCutterApp {
                         && self.save_project_dialog()
                     {
                         self.modals.show_unsaved_close = false;
-                        self.allow_close_without_prompt = true;
+                        self.session.allow_close_without_prompt = true;
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
 
@@ -645,7 +648,7 @@ impl ChipCutterApp {
                         .clicked()
                     {
                         self.modals.show_unsaved_close = false;
-                        self.allow_close_without_prompt = true;
+                        self.session.allow_close_without_prompt = true;
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
 
