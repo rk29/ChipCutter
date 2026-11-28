@@ -3,13 +3,16 @@
 
 use std::sync::{Arc, Mutex};
 
-use chip_math::{Aabb2, DVec2, DVec3};
+use chip_math::DVec3;
 use wgpu::util::DeviceExt as _;
 
 use crate::{
     backend::StockCheckpointSnapshot,
-    heightfield::HeightfieldStock,
-    types::{BatchSweepOutput, SweepChord, SweepMotion, SweepToolSpec},
+    heightfield::{
+        HeightfieldStock,
+        sweep::{motion_min_tip_z, motion_xy_bounds},
+    },
+    types::{BatchSweepOutput, SweepChord, SweepToolSpec},
 };
 
 use super::{
@@ -779,33 +782,4 @@ fn build_hf_bind_group(
             },
         ],
     })
-}
-
-#[inline]
-fn motion_min_tip_z(prim: &SweepMotion) -> f64 {
-    match *prim {
-        SweepMotion::Linear { p0, p1, .. } => p0.z.min(p1.z),
-        SweepMotion::PlanarArcXY { start, end, .. } => start.z.min(end.z),
-    }
-}
-
-#[inline]
-fn motion_xy_bounds(prim: &SweepMotion, expand_r: f64) -> Aabb2 {
-    match *prim {
-        SweepMotion::Linear { p0, p1, .. } => Aabb2 {
-            min: DVec2::new(p0.x.min(p1.x) - expand_r, p0.y.min(p1.y) - expand_r),
-            max: DVec2::new(p0.x.max(p1.x) + expand_r, p0.y.max(p1.y) + expand_r),
-        },
-        SweepMotion::PlanarArcXY {
-            center_xy,
-            radius_mm,
-            ..
-        } => {
-            let r_tot = radius_mm + expand_r;
-            Aabb2 {
-                min: DVec2::new(center_xy.x - r_tot, center_xy.y - r_tot),
-                max: DVec2::new(center_xy.x + r_tot, center_xy.y + r_tot),
-            }
-        }
-    }
 }

@@ -16,8 +16,6 @@ pub mod cylindrical;
 #[cfg(feature = "gpu-compute")]
 pub mod gpu;
 pub mod heightfield;
-#[cfg(test)]
-mod mesh_skinning_tests;
 pub mod metrics;
 pub mod tridexel;
 pub mod types;

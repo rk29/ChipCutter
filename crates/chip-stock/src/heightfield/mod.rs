@@ -5,7 +5,7 @@
 
 mod grid;
 mod mesher;
-mod sweep;
+pub(crate) mod sweep;
 
 pub use grid::HeightfieldStock;
 pub use mesher::{

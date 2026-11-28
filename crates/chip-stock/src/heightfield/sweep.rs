@@ -346,7 +346,7 @@ struct CutterCellHit {
 }
 
 #[inline]
-fn motion_min_tip_z(prim: &SweepMotion) -> f64 {
+pub(crate) fn motion_min_tip_z(prim: &SweepMotion) -> f64 {
     match *prim {
         SweepMotion::Linear { p0, p1, .. } => p0.z.min(p1.z),
         SweepMotion::PlanarArcXY { start, end, .. } => start.z.min(end.z),
@@ -354,7 +354,7 @@ fn motion_min_tip_z(prim: &SweepMotion) -> f64 {
 }
 
 #[inline]
-fn motion_xy_bounds(prim: &SweepMotion, expand_r: f64) -> Aabb2 {
+pub(crate) fn motion_xy_bounds(prim: &SweepMotion, expand_r: f64) -> Aabb2 {
     match *prim {
         SweepMotion::Linear { p0, p1, .. } => Aabb2 {
             min: DVec2::new(p0.x.min(p1.x) - expand_r, p0.y.min(p1.y) - expand_r),

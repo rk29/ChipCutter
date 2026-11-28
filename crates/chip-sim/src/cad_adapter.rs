@@ -70,18 +70,19 @@ pub const fn rotary_stock_spec_from_cam(rotary: ResolvedRotaryConfig) -> RotaryS
     }
 }
 
-/// Extracts upward-facing exact analytic horizontal B-Rep faces (`n_wcs.z > 0.999`) and
-/// sloped/freeform/mesh target triangles in Setup WCS for [`chip_stock::HeightfieldStock::rasterize_target`].
+/// Collects exact analytic horizontal B-Rep planar faces in Setup WCS together with a face-ID
+/// handled mask so tessellated `pick_triangles` on those faces can be skipped cleanly.
 ///
-/// Filters both STEP B-Rep faces (`doc.faces`) and imported STL/OBJ/3MF mesh bodies (`doc.meshes`)
-/// accurately by `target_bodies` (or includes all bodies when `target_bodies` is empty).
-pub fn extract_heightfield_target_from_cad(
+/// When `upward_only` is `true`, only upward-facing planes (`n_wcs.z > 0.999`, `dir_sign = -1`)
+/// are collected (2.5D heightfield). When `false`, both `+Z` and `-Z` horizontal planes
+/// (`|n_wcs.z| > 0.999`) are collected with signed Z-ray crossing directions (3D Tri-Dexel).
+fn collect_analytic_horiz_faces(
     doc: &CadDocument,
     setup: &ResolvedSetup,
     target_bodies: &[BodyId],
-) -> (Vec<AnalyticHorizFace>, Vec<TargetTriangle>) {
+    upward_only: bool,
+) -> (Vec<AnalyticHorizFace>, Vec<bool>) {
     let include_body = |bid: BodyId| target_bodies.is_empty() || target_bodies.contains(&bid);
-
     let mut horiz_faces: Vec<AnalyticHorizFace> = Vec::new();
     let mut handled_horiz_face_ids = vec![false; doc.faces.len()];
 
@@ -91,7 +92,12 @@ pub fn extract_heightfield_target_from_cad(
         }
         if let SurfaceKind::Plane { normal, .. } = face.surface {
             let n_wcs = setup.frame.world_to_local_dir(normal.normalize_or_zero());
-            if n_wcs.z > 0.999
+            let matches_normal = if upward_only {
+                n_wcs.z > 0.999
+            } else {
+                n_wcs.z.abs() > 0.999
+            };
+            if matches_normal
                 && let Some(binding) = doc.bind_face(face.id)
                 && let Ok(summary) = extract_selection_features(
                     doc,
@@ -99,6 +105,7 @@ pub fn extract_heightfield_target_from_cad(
                     &[GeometrySelectionItem::PlanarFace { binding }],
                 )
             {
+                let dir_sign: i8 = if n_wcs.z < 0.0 { 1 } else { -1 };
                 for feat in summary.features {
                     if let ExtractedFeature25D::PlanarFace {
                         source_face_id,
@@ -117,7 +124,7 @@ pub fn extract_heightfield_target_from_cad(
                                 inners: inner_islands_wcs,
                                 aabb,
                                 z_wcs: face_z_wcs,
-                                dir_sign: -1,
+                                dir_sign,
                             });
                             if (face.id.0 as usize) < handled_horiz_face_ids.len() {
                                 handled_horiz_face_ids[face.id.0 as usize] = true;
@@ -128,6 +135,23 @@ pub fn extract_heightfield_target_from_cad(
             }
         }
     }
+
+    (horiz_faces, handled_horiz_face_ids)
+}
+
+/// Extracts upward-facing exact analytic horizontal B-Rep faces (`n_wcs.z > 0.999`) and
+/// sloped/freeform/mesh target triangles in Setup WCS for [`chip_stock::HeightfieldStock::rasterize_target`].
+///
+/// Filters both STEP B-Rep faces (`doc.faces`) and imported STL/OBJ/3MF mesh bodies (`doc.meshes`)
+/// accurately by `target_bodies` (or includes all bodies when `target_bodies` is empty).
+pub fn extract_heightfield_target_from_cad(
+    doc: &CadDocument,
+    setup: &ResolvedSetup,
+    target_bodies: &[BodyId],
+) -> (Vec<AnalyticHorizFace>, Vec<TargetTriangle>) {
+    let include_body = |bid: BodyId| target_bodies.is_empty() || target_bodies.contains(&bid);
+    let (horiz_faces, handled_horiz_face_ids) =
+        collect_analytic_horiz_faces(doc, setup, target_bodies, true);
 
     let mut triangles: Vec<TargetTriangle> = Vec::new();
 
@@ -204,52 +228,8 @@ pub fn extract_tridexel_target_from_cad(
     let include_body = |bid: BodyId| target_bodies.is_empty() || target_bodies.contains(&bid);
 
     // 1. Collect horizontal B-Rep planar faces (`±Z`) analytically for exact Z-ray hole/island cuts
-    let mut horiz_faces: Vec<AnalyticHorizFace> = Vec::new();
-    let mut handled_horiz_face_ids = vec![false; doc.faces.len()];
-    for face in &doc.faces {
-        if !include_body(face.body_id) {
-            continue;
-        }
-        if let SurfaceKind::Plane { normal, .. } = face.surface {
-            let n_wcs = setup.frame.world_to_local_dir(normal.normalize_or_zero());
-            if n_wcs.z.abs() > 0.999
-                && let Some(binding) = doc.bind_face(face.id)
-                && let Ok(summary) = extract_selection_features(
-                    doc,
-                    setup,
-                    &[GeometrySelectionItem::PlanarFace { binding }],
-                )
-            {
-                let dir_sign: i8 = if n_wcs.z < 0.0 { 1 } else { -1 };
-                for feat in summary.features {
-                    if let ExtractedFeature25D::PlanarFace {
-                        source_face_id,
-                        outer_boundary_wcs,
-                        inner_islands_wcs,
-                        face_z_wcs,
-                        ..
-                    } = feat
-                        && source_face_id == Some(face.id)
-                        && !outer_boundary_wcs.segments.is_empty()
-                    {
-                        let aabb = outer_boundary_wcs.exact_aabb();
-                        if aabb.is_valid() {
-                            horiz_faces.push(AnalyticHorizFace {
-                                outer: outer_boundary_wcs,
-                                inners: inner_islands_wcs,
-                                aabb,
-                                z_wcs: face_z_wcs,
-                                dir_sign,
-                            });
-                            if (face.id.0 as usize) < handled_horiz_face_ids.len() {
-                                handled_horiz_face_ids[face.id.0 as usize] = true;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    let (horiz_faces, handled_horiz_face_ids) =
+        collect_analytic_horiz_faces(doc, setup, target_bodies, false);
 
     let mut tris_wcs_all: Vec<[DVec3; 3]> = Vec::new();
     let mut tris_wcs_z: Vec<[DVec3; 3]> = Vec::new();
@@ -312,9 +292,9 @@ pub fn extract_tridexel_target_from_cad(
     ))
 }
 
-/// Builds a WCS-space [`TriMesh3D`] target solid for [`chip_stock::CylindricalStock::rasterize_target_mesh`],
+/// Builds a WCS-space [`TriMesh3D`] target solid for GPU BVH and cylindrical target rasterization,
 /// accurately filtering both `doc.meshes` and B-Rep `doc.faces` by `target_bodies`.
-pub fn extract_cylindrical_target_mesh_from_cad(
+pub fn extract_target_trimesh_from_cad(
     doc: &CadDocument,
     setup: &ResolvedSetup,
     target_bodies: &[BodyId],
@@ -505,9 +485,8 @@ mod tests {
             "excluded BodyId(1) must NOT be rasterized into Heightfield z_target"
         );
 
-        // 4. Cylindrical TriMesh3D target adapter filters `doc.meshes` identically!
-        let cyl_mesh =
-            extract_cylindrical_target_mesh_from_cad(&doc, &setup, &[BodyId(1)]).unwrap();
+        // 4. TriMesh3D target adapter filters `doc.meshes` identically!
+        let cyl_mesh = extract_target_trimesh_from_cad(&doc, &setup, &[BodyId(1)]).unwrap();
         assert_eq!(cyl_mesh.len(), 12);
     }
 }

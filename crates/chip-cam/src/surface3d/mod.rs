@@ -3,13 +3,22 @@
 //! Operates in active Setup WCS coordinates over [`SurfaceMesh3D`], built seamlessly from either
 //! imported triangle meshes (`STL`/`OBJ`/`3MF`) or tessellated STEP B-Rep solids.
 
+pub mod chords;
 pub mod cutter;
 pub mod drop_cutter;
-pub mod finishing;
 pub mod levels;
+pub mod linking;
 pub mod overhang_guard;
 pub mod push_cutter;
+pub mod rest_mask;
 pub mod slab_projection;
+
+/// Backwards-compatible re-export facade for callers importing `surface3d::finishing::*`.
+pub mod finishing {
+    pub use super::chords::*;
+    pub use super::linking::*;
+    pub use super::rest_mask::*;
+}
 
 use std::ops::Deref;
 
@@ -17,26 +26,33 @@ use chip_bvh::{ClosestPointHit, FlatBvh, RayHit, Tri3D, TriMesh3D};
 use chip_cad::{BodyId, CadDocument, MeshTriangle};
 use chip_math::{Aabb3, DVec3, RigidFrame3};
 
+pub use chords::{
+    refine_convex_chords_3d, simplify_3d_polyline_gouge_safe, simplify_3d_polyline_rdp,
+    stepover_for_cusp_height,
+};
 pub use cutter::{AssemblyClearanceSpec, SurfaceCutterProfile, SurfaceCutterShape};
 pub use drop_cutter::{
     DropCutterDetail, drop_cutter_points_parallel, drop_cutter_z,
     drop_cutter_z_detailed_with_scratch, drop_cutter_z_with_scratch,
-};
-pub use finishing::{
-    RestMaskGrid2D, SurfaceLinkConfig, build_3d_rest_mask, compute_morphological_rest_residual,
-    emit_final_surface_retract, emit_surface_safe_link_with_avoid, refine_convex_chords_3d,
-    region_aabb_2d, simplify_3d_polyline_rdp, stepover_for_cusp_height,
 };
 pub use levels::{
     ResolvedBoundary2D, clip_polyline_to_region, detect_flat_plateaus, rect_region_2d,
     resolve_3d_boundary_config_detailed, resolve_3d_containment_region_detailed,
     sample_surface_slope_deg, stock_xy_region,
 };
+pub use linking::{
+    SurfaceLinkConfig, emit_final_surface_retract, emit_surface_safe_link_with_avoid,
+    is_overhang_shadow_transition, split_chains_at_overhang_cliffs,
+    suppress_overhang_shadow_residuals,
+};
 pub use overhang_guard::{
     OverhangGuardReport, check_2d_toolpath_against_overhangs, check_hole_column_overhang,
     clip_2d_contour_outside_overhangs, is_2d_arc_clear_of_avoid, is_2d_segment_clear_of_avoid,
 };
 pub use push_cutter::{PushCutterField, push_cutter_region_z, slice_surface_contours_z};
+pub use rest_mask::{
+    RestMaskGrid2D, build_3d_rest_mask, compute_morphological_rest_residual, region_aabb_2d,
+};
 pub use slab_projection::project_surface_z_slab_xy;
 
 /// WCS-space canonical `f64` triangle surface mesh backed zero-copy by a [`chip_bvh::TriMesh3D`].

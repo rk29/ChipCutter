@@ -195,25 +195,22 @@ impl SimulatedStock {
         thread_check_radius_mm: Option<f64>,
     ) -> f64 {
         match self {
-            Self::Heightfield(hf) => {
-                let stock_z = if let Some(check_r) = thread_check_radius_mm {
-                    hf.sample_max_stock_z_in_disk(x_wcs, y_wcs, check_r)
-                } else {
-                    hf.sample_stock_z(x_wcs, y_wcs)
-                };
-                stock_z.map_or(0.0, |sz| sz.min(z_start_wcs) - z_end_wcs)
-            }
-            Self::TriDexel(td) => {
-                if td.rotary.is_some() {
-                    return 0.0;
-                }
-                if let Some(check_r) = thread_check_radius_mm {
-                    td.query_vertical_plunge_overlap(x_wcs, y_wcs, check_r, z_end_wcs, z_start_wcs)
-                } else {
-                    td.sample_top_z(x_wcs, y_wcs)
-                        .map_or(0.0, |top_z| top_z.min(z_start_wcs) - z_end_wcs)
-                }
-            }
+            Self::Heightfield(hf) => query_heightfield_plunge_depth(
+                hf,
+                x_wcs,
+                y_wcs,
+                z_start_wcs,
+                z_end_wcs,
+                thread_check_radius_mm,
+            ),
+            Self::TriDexel(td) => query_tridexel_plunge_depth(
+                td,
+                x_wcs,
+                y_wcs,
+                z_start_wcs,
+                z_end_wcs,
+                thread_check_radius_mm,
+            ),
             Self::Cylindrical(_) => 0.0,
         }
     }
@@ -464,6 +461,43 @@ impl SimulatedStock {
 
         *cursor = Some(target);
         changed
+    }
+}
+
+/// Shared Rule 5 vertical plunge depth query on a [`HeightfieldStock`].
+pub(crate) fn query_heightfield_plunge_depth(
+    hf: &HeightfieldStock,
+    x_wcs: f64,
+    y_wcs: f64,
+    z_start_wcs: f64,
+    z_end_wcs: f64,
+    thread_check_radius_mm: Option<f64>,
+) -> f64 {
+    let stock_z = if let Some(check_r) = thread_check_radius_mm {
+        hf.sample_max_stock_z_in_disk(x_wcs, y_wcs, check_r)
+    } else {
+        hf.sample_stock_z(x_wcs, y_wcs)
+    };
+    stock_z.map_or(0.0, |sz| sz.min(z_start_wcs) - z_end_wcs)
+}
+
+/// Shared Rule 5 vertical plunge depth query on a [`TriDexelStock`].
+pub(crate) fn query_tridexel_plunge_depth(
+    td: &TriDexelStock,
+    x_wcs: f64,
+    y_wcs: f64,
+    z_start_wcs: f64,
+    z_end_wcs: f64,
+    thread_check_radius_mm: Option<f64>,
+) -> f64 {
+    if td.rotary.is_some() {
+        return 0.0;
+    }
+    if let Some(check_r) = thread_check_radius_mm {
+        td.query_vertical_plunge_overlap(x_wcs, y_wcs, check_r, z_end_wcs, z_start_wcs)
+    } else {
+        td.sample_top_z(x_wcs, y_wcs)
+            .map_or(0.0, |top_z| top_z.min(z_start_wcs) - z_end_wcs)
     }
 }
 

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use chip_math::{Aabb3, DVec3, DisplayUnit};
 use chip_tools::{CoolantMode, CutterGeometry, SpindleDirection, Tool, ToolId};
 
-use crate::{
+use chip_stock::{
     backend::{CpuExactBackend, SimStockBackend, SimulatedStock},
     cylindrical::CylindricalStock,
     heightfield::HeightfieldStock,

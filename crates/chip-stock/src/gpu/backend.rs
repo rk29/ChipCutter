@@ -7,7 +7,10 @@ use std::sync::Arc;
 use chip_bvh::TriMesh3D;
 
 use crate::{
-    backend::{SimStockBackend, SimulatedStock, StockCheckpointSnapshot, StockModelKind},
+    backend::{
+        SimStockBackend, SimulatedStock, StockCheckpointSnapshot, StockModelKind,
+        query_heightfield_plunge_depth, query_tridexel_plunge_depth,
+    },
     cylindrical::tessellate_cylindrical_stock_mesh_with_options,
     heightfield::tessellate_stock_mesh_with_options,
     metrics::{
@@ -243,24 +246,25 @@ impl SimStockBackend for WgpuComputeBackend {
     ) -> f64 {
         match &self.inner {
             GpuBackendInner::Heightfield(hf) => hf.with_synced_stock(|s| {
-                let stock_z = if let Some(check_r) = thread_check_radius_mm {
-                    s.sample_max_stock_z_in_disk(x_wcs, y_wcs, check_r)
-                } else {
-                    s.sample_stock_z(x_wcs, y_wcs)
-                };
-                stock_z.map_or(0.0, |sz| sz.min(z_start_wcs) - z_end_wcs)
+                query_heightfield_plunge_depth(
+                    s,
+                    x_wcs,
+                    y_wcs,
+                    z_start_wcs,
+                    z_end_wcs,
+                    thread_check_radius_mm,
+                )
             }),
             GpuBackendInner::Cylindrical(_) => 0.0,
             GpuBackendInner::TriDexel(td) => td.with_synced_stock(|s| {
-                if s.rotary.is_some() {
-                    return 0.0;
-                }
-                if let Some(check_r) = thread_check_radius_mm {
-                    s.query_vertical_plunge_overlap(x_wcs, y_wcs, check_r, z_end_wcs, z_start_wcs)
-                } else {
-                    s.sample_top_z(x_wcs, y_wcs)
-                        .map_or(0.0, |top_z| top_z.min(z_start_wcs) - z_end_wcs)
-                }
+                query_tridexel_plunge_depth(
+                    s,
+                    x_wcs,
+                    y_wcs,
+                    z_start_wcs,
+                    z_end_wcs,
+                    thread_check_radius_mm,
+                )
             }),
         }
     }
