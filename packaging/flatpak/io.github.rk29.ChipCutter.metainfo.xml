@@ -50,6 +50,11 @@
   </screenshots>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.27.1" date="2026-11-28">
+      <description>
+        <p>Patch release restoring exact cavalier_contours bulge-to-arc conversion math in chip-geom2d and cancellation-free bulge-to-arc evaluation in chip-math::ArcSegment2D::from_bulge to guarantee bit-for-bit cross-platform golden G-code parity across Linux, Windows, and macOS ARM64.</p>
+      </description>
+    </release>
     <release version="0.27.0" date="2026-11-28">
       <description>
         <p>Phase 27 release (Workspace Architecture Refactoring, Clean Crate Boundaries, &amp; De-Monolithing): extracted four focused workspace crates (chip-cl severing chip-post from chip-cam and the CAD stack, chip-fixtures isolating synthetic geometry generators and monstertruck-modeling from chip-cad, chip-demos unifying CLI and GUI sample catalogs, and chip-machines with shared PresetStore user-config storage while feature-gating chip-tools so chip-stock stays lean); consolidated four-way cutter and holder envelope math into chip-tools::ToolAssemblyEnvelope (fixing a radial-shrink stale-envelope bug in 3D surface finishing); unified duplicated CLI and GUI project mutations, batch G-code export, setup kinematics resolution, volumetric simulation detection, Pure-2D sheet scaffolding, and mesh reload workflows; relocated viewport-only GPU stock emission and 3D cutter mesh presentation into chip-gui; removed dead code and duplicated geometry/STL helpers across crates; decomposed oversized core and GUI monoliths; extracted inline integration test suites into tests/; and synchronized living architecture specifications while preserving 100% lossless .chip.toml compatibility and golden G-code parity.</p>

@@ -686,7 +686,7 @@ dependencies = [
 
 [[package]]
 name = "chip-bvh"
-version = "0.27.0"
+version = "0.27.1"
 dependencies = [
  "bytemuck",
  "chip-math",
@@ -695,7 +695,7 @@ dependencies = [
 
 [[package]]
 name = "chip-cad"
-version = "0.27.0"
+version = "0.27.1"
 dependencies = [
  "chip-bvh",
  "chip-fixtures",
@@ -710,7 +710,7 @@ dependencies = [
 
 [[package]]
 name = "chip-cam"
-version = "0.27.0"
+version = "0.27.1"
 dependencies = [
  "chip-bvh",
  "chip-cad",
@@ -730,7 +730,7 @@ dependencies = [
 
 [[package]]
 name = "chip-cl"
-version = "0.27.0"
+version = "0.27.1"
 dependencies = [
  "chip-math",
  "chip-tools",
@@ -739,7 +739,7 @@ dependencies = [
 
 [[package]]
 name = "chip-cli"
-version = "0.27.0"
+version = "0.27.1"
 dependencies = [
  "chip-cad",
  "chip-cam",
@@ -760,7 +760,7 @@ dependencies = [
 
 [[package]]
 name = "chip-demos"
-version = "0.27.0"
+version = "0.27.1"
 dependencies = [
  "chip-cad",
  "chip-cam",
@@ -773,7 +773,7 @@ dependencies = [
 
 [[package]]
 name = "chip-fixtures"
-version = "0.27.0"
+version = "0.27.1"
 dependencies = [
  "chip-math",
  "dxf",
@@ -785,7 +785,7 @@ dependencies = [
 
 [[package]]
 name = "chip-geom2d"
-version = "0.27.0"
+version = "0.27.1"
 dependencies = [
  "boostvoronoi",
  "cavalier_contours",
@@ -794,7 +794,7 @@ dependencies = [
 
 [[package]]
 name = "chip-gui"
-version = "0.27.0"
+version = "0.27.1"
 dependencies = [
  "bytemuck",
  "chip-cad",
@@ -834,7 +834,7 @@ dependencies = [
 
 [[package]]
 name = "chip-machines"
-version = "0.27.0"
+version = "0.27.1"
 dependencies = [
  "chip-math",
  "chip-tools",
@@ -845,7 +845,7 @@ dependencies = [
 
 [[package]]
 name = "chip-math"
-version = "0.27.0"
+version = "0.27.1"
 dependencies = [
  "glam",
  "serde",
@@ -854,7 +854,7 @@ dependencies = [
 
 [[package]]
 name = "chip-post"
-version = "0.27.0"
+version = "0.27.1"
 dependencies = [
  "chip-cl",
  "chip-machines",
@@ -867,7 +867,7 @@ dependencies = [
 
 [[package]]
 name = "chip-project"
-version = "0.27.0"
+version = "0.27.1"
 dependencies = [
  "chip-bvh",
  "chip-cad",
@@ -892,7 +892,7 @@ dependencies = [
 
 [[package]]
 name = "chip-sim"
-version = "0.27.0"
+version = "0.27.1"
 dependencies = [
  "chip-bvh",
  "chip-cad",
@@ -908,7 +908,7 @@ dependencies = [
 
 [[package]]
 name = "chip-sketch"
-version = "0.27.0"
+version = "0.27.1"
 dependencies = [
  "chip-fixtures",
  "chip-geom2d",
@@ -926,7 +926,7 @@ dependencies = [
 
 [[package]]
 name = "chip-stock"
-version = "0.27.0"
+version = "0.27.1"
 dependencies = [
  "bytemuck",
  "chip-bvh",
@@ -941,7 +941,7 @@ dependencies = [
 
 [[package]]
 name = "chip-tools"
-version = "0.27.0"
+version = "0.27.1"
 dependencies = [
  "chip-math",
  "dirs",
