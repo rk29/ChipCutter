@@ -5,7 +5,7 @@ use cavalier_contours::{
     core::math::Vector2,
     polyline::{
         BooleanOp, PlineBooleanOptions, PlineOffsetOptions, PlineOrientation, PlineSource,
-        PlineSourceMut, PlineVertex, Polyline,
+        PlineSourceMut, PlineVertex, Polyline, seg_arc_radius_and_center,
     },
     shape_algorithms::{Shape, ShapeOffsetOptions},
 };
@@ -102,10 +102,22 @@ pub(crate) fn from_cavalier_polyline(pline: &Polyline<f64>) -> ArcPolyline2D {
             continue;
         }
 
-        if v1.bulge_is_zero() {
+        if v1.bulge_is_zero() || v1.bulge.abs() <= 1e-6 {
             segments.push(ArcSegment2D::Line { start: p1, end: p2 });
         } else {
-            segments.push(ArcSegment2D::from_bulge(p1, p2, v1.bulge));
+            let (radius, c_vec) = seg_arc_radius_and_center(v1, v2);
+            let center = DVec2::new(c_vec.x, c_vec.y);
+            if radius.is_finite() && radius > 1e-5 && radius < 1e7 && center.is_finite() {
+                segments.push(ArcSegment2D::Arc {
+                    start: p1,
+                    end: p2,
+                    center,
+                    radius,
+                    ccw: v1.bulge > 0.0,
+                });
+            } else {
+                segments.push(ArcSegment2D::Line { start: p1, end: p2 });
+            }
         }
     }
 

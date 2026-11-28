@@ -110,11 +110,11 @@ impl ArcSegment2D {
         if !chord_len.is_finite() || chord_len <= 1e-12 {
             return Self::Line { start: p0, end: p1 };
         }
-        let abs_b = bulge.abs();
-        let radius = 0.25 * chord_len * (abs_b + 1.0 / abs_b);
-        let mid = 0.5 * (p0 + p1);
+        let bulge_squared = bulge * bulge;
+        let inv_four_bulge = 1.0 / (4.0 * bulge);
+        let radius = chord_len * (1.0 + bulge_squared) * inv_four_bulge.abs();
         let perp = DVec2::new(-chord.y, chord.x);
-        let center = mid + perp * (0.25 * (1.0 / bulge - bulge));
+        let center = p0 + chord * 0.5 + perp * ((1.0 - bulge) * (1.0 + bulge) * inv_four_bulge);
         if radius.is_finite() && radius > 1e-5 && radius < 1e7 && center.is_finite() {
             Self::Arc {
                 start: p0,
