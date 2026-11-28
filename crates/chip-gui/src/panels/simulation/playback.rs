@@ -2,9 +2,11 @@ use std::sync::Arc;
 
 use chip_math::DVec3;
 use chip_project::ProjectDocument;
-use chip_sim::{ScrubSnapshot, SetupSimulationResult, build_cutter_assembly_mesh};
+use chip_sim::{ScrubSnapshot, SetupSimulationResult};
 
-use crate::viewport::SimStockRenderSource;
+#[cfg(feature = "gpu-compute")]
+use crate::viewport::GpuStockRenderHandle;
+use crate::viewport::{SimStockRenderSource, SimToolMesh, build_cutter_assembly_mesh};
 
 use super::{
     SimViewportVisuals, SimulationPanelState,
@@ -123,7 +125,7 @@ impl SimulationPanelState {
                                 .as_ref()
                                 .and_then(|r| r.target_tridexel_stock.as_ref());
                             let color_mode = self.active_stock_color_mode();
-                            let handle = chip_sim::GpuStockRenderHandle::from_simulated_stock(
+                            let handle = GpuStockRenderHandle::from_simulated_stock(
                                 render_ctx, &stock, target_td, color_mode,
                             );
                             self.cached_gpu_handle = Some(handle);
@@ -336,7 +338,7 @@ impl SimulationPanelState {
         project: &ProjectDocument,
         res: &SetupSimulationResult,
         snap: Option<&ScrubSnapshot>,
-    ) -> Option<(u64, Arc<chip_sim::SimToolMesh>, DVec3)> {
+    ) -> Option<(u64, Arc<SimToolMesh>, DVec3)> {
         if !self.show_cutter_assembly {
             return None;
         }
@@ -771,7 +773,7 @@ mod tests {
 
     #[test]
     fn rotary_simulation_panel_exposes_active_error_report_and_tolerance_updates() {
-        let stl = chip_cad::sample_rotary_shaft_stl_bytes();
+        let stl = chip_fixtures::sample_rotary_shaft_stl_bytes();
         let doc = chip_cad::load_mesh_cad_document(
             "rotary_shaft.stl",
             &stl,
@@ -869,7 +871,7 @@ mod tests {
         project.tools = lib.tools.clone();
         let ball_6mm = &lib.tools[3];
 
-        let stl = chip_cad::sample_helical_flute_shaft_stl_bytes();
+        let stl = chip_fixtures::sample_helical_flute_shaft_stl_bytes();
         let doc = chip_cad::load_mesh_cad_document(
             "helical_flute_shaft.stl",
             &stl,

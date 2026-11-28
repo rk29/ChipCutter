@@ -1,4 +1,4 @@
-use chip_cam::{
+use chip_cl::{
     ArcDir, ArcPlane, DrillCycleKind, DrillCycleSpec, MotionRole, SegmentMotion3D,
     ToolpathSegment3D, expand_drill_cycle_segments,
 };

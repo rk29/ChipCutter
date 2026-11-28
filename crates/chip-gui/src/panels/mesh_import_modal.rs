@@ -2,8 +2,9 @@ use std::path::PathBuf;
 
 use chip_cad::{
     MAX_MODEL_SCALE, MIN_MODEL_SCALE, MeshImportOptions, MeshUnitKind, ModelTransform,
-    TriangleMeshBody, load_mesh_bytes, sample_relief_wave_obj_text, sample_sculpted_dome_stl_bytes,
+    TriangleMeshBody, load_mesh_bytes,
 };
+use chip_fixtures::{sample_relief_wave_obj_text, sample_sculpted_dome_stl_bytes};
 use chip_math::{Aabb3, DisplayUnit};
 
 use crate::{

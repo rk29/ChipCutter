@@ -5,7 +5,8 @@ pub mod overlays;
 pub mod pipeline;
 pub mod scene_builders;
 #[cfg(feature = "gpu-compute")]
-mod sim_gpu_render;
+pub(crate) mod sim_gpu_render;
+pub mod tool_mesh;
 pub mod toolpath_instances;
 
 pub use highlight::{
@@ -20,3 +21,6 @@ pub use overlays::{
 pub use pipeline::ViewportRenderer;
 #[cfg(test)]
 pub use pipeline::{render_offscreen_png, render_offscreen_rgba_on_device};
+#[cfg(feature = "gpu-compute")]
+pub use sim_gpu_render::GpuStockRenderHandle;
+pub use tool_mesh::{SimToolMesh, build_cutter_assembly_mesh};

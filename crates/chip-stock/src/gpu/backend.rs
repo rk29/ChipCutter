@@ -11,7 +11,7 @@ use crate::{
     cylindrical::tessellate_cylindrical_stock_mesh_with_options,
     heightfield::tessellate_stock_mesh_with_options,
     metrics::{
-        OperationErrorSnapshot, SimStockColorMode, StockErrorReport, compute_tridexel_error_report,
+        OperationErrorSnapshot, StockErrorReport, compute_tridexel_error_report,
         compute_tridexel_quick_error_summary,
     },
     tridexel::{TriDexelStock, tessellate_tridexel_stock_mesh_with_options},
@@ -23,8 +23,7 @@ use crate::{
 
 use super::{
     checkpoints::GpuCheckpointBuffers, context::GpuSimContext, cylindrical::GpuCylindricalState,
-    heightfield::GpuHeightfieldState, render_handle::GpuStockRenderHandle,
-    tridexel::GpuTriDexelState,
+    heightfield::GpuHeightfieldState, snapshot::GpuStockBufferSnapshot, tridexel::GpuTriDexelState,
 };
 
 #[derive(Debug)]
@@ -76,30 +75,14 @@ impl WgpuComputeBackend {
         }
     }
 
-    /// Captures a read-only zero-readback [`GpuStockRenderHandle`] snapshot for direct viewport
-    /// rendering on the shared `wgpu::Device` (`Heightfield`, `Cylindrical`, or `TriDexel`
-    /// indirect-draw vertex buffer emitted via `tridexel_emit.wgsl`).
-    pub fn capture_render_handle(
-        &mut self,
-        color_mode: SimStockColorMode,
-    ) -> Arc<GpuStockRenderHandle> {
+    /// Captures a read-only zero-readback [`GpuStockBufferSnapshot`] of this backend's GPU
+    /// storage buffers and grid metadata (`Heightfield`, `Cylindrical`, or `TriDexel`) without
+    /// coupling compute storage to viewport shaders or presentation color options.
+    pub fn capture_buffer_snapshot(&mut self) -> Arc<GpuStockBufferSnapshot> {
         match &mut self.inner {
-            GpuBackendInner::Heightfield(hf) => hf.capture_render_handle(),
-            GpuBackendInner::Cylindrical(c) => c.capture_render_handle(),
-            GpuBackendInner::TriDexel(td) => td.capture_render_handle(color_mode),
-        }
-    }
-
-    /// Captures a read-only zero-readback [`GpuStockRenderHandle`] snapshot with visual
-    /// [`SimMeshOptions`] (`color_mode` + optional `mesh_skinning`).
-    pub fn capture_render_handle_with_options(
-        &mut self,
-        options: SimMeshOptions,
-    ) -> Arc<GpuStockRenderHandle> {
-        match &mut self.inner {
-            GpuBackendInner::Heightfield(hf) => hf.capture_render_handle_with_options(options),
-            GpuBackendInner::Cylindrical(c) => c.capture_render_handle(),
-            GpuBackendInner::TriDexel(td) => td.capture_render_handle_with_options(options),
+            GpuBackendInner::Heightfield(hf) => hf.capture_buffer_snapshot(),
+            GpuBackendInner::Cylindrical(c) => c.capture_buffer_snapshot(),
+            GpuBackendInner::TriDexel(td) => td.capture_buffer_snapshot(),
         }
     }
 

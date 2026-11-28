@@ -18,10 +18,10 @@ pub mod gpu;
 pub mod heightfield;
 #[cfg(test)]
 mod mesh_skinning_tests;
-pub mod mesher_common;
 pub mod metrics;
 pub mod tridexel;
 pub mod types;
+pub mod visual;
 
 pub use backend::{
     CpuExactBackend, SimStockBackend, SimulatedStock, StockCheckpointSnapshot, StockModelKind,
@@ -32,26 +32,20 @@ pub use cylindrical::{
 };
 #[cfg(feature = "gpu-compute")]
 pub use gpu::{
-    DEFAULT_GPU_CHECKPOINT_BUDGET_BYTES, GpuCheckpointCache, GpuCylindricalRenderData,
-    GpuErrorHistogram, GpuHeightfieldRenderData, GpuMeshBvh, GpuSimContext, GpuStockRenderHandle,
-    GpuTriDexelRenderData, MAX_TRIDEXEL_EMIT_QUADS, PackedTriDexelQuad,
-    TRIDEXEL_DUAL_OFFSET_PACK_SCALE, TRIDEXEL_PACKED_QUAD_BYTES, WgpuComputeBackend,
-    oct_decode_unit_normal, oct_encode_unit_normal, pack_oct_normal_pair_12bit,
-    unpack_oct_normal_12bit,
+    DEFAULT_GPU_CHECKPOINT_BUDGET_BYTES, GpuCheckpointCache, GpuCylindricalBuffers,
+    GpuErrorHistogram, GpuHeightfieldBuffers, GpuMeshBvh, GpuSimContext, GpuStockBufferSnapshot,
+    GpuTriDexelBuffers, TriDexelOverflowData, WgpuComputeBackend,
+    build_tridexel_overflow_supplement_mesh,
 };
 pub use heightfield::{
     HeightfieldStock, tessellate_stock_mesh, tessellate_stock_mesh_colored,
     tessellate_stock_mesh_with_options,
 };
-pub use mesher_common::{
-    MACHINED_METAL_COLOR, OPERATION_STOCK_PALETTE, RAW_STOCK_SIDE_COLOR, RAW_STOCK_TOP_COLOR,
-    op_color,
-};
 pub use metrics::{
-    OperationErrorSnapshot, SimStockColorMode, StockErrorReport, compute_cylindrical_error_report,
+    OperationErrorSnapshot, StockErrorReport, compute_cylindrical_error_report,
     compute_cylindrical_quick_error_summary, compute_heightmap_error_report,
     compute_heightmap_quick_error_summary, compute_tridexel_error_report,
-    compute_tridexel_quick_error_summary, deviation_to_heatmap_rgba,
+    compute_tridexel_quick_error_summary,
 };
 pub use tridexel::{
     DexelPlane, DexelSpan, FlatDexelSpan, INLINE_DEXEL_SLOTS, RaySpans, TriDexelStock,
@@ -66,4 +60,8 @@ pub use types::{
     SimMeshOptions, SimResolution, SimStockMesh, SpanRuleViolations, StockPlaybackCursor,
     StockShapeSpec, StockVerifyTolerances, SweepChord, SweepMotion, SweepToolSpec, TargetTriangle,
     UNCUT_OP_IDX,
+};
+pub use visual::{
+    MACHINED_METAL_COLOR, OPERATION_STOCK_PALETTE, RAW_STOCK_SIDE_COLOR, RAW_STOCK_TOP_COLOR,
+    SimStockColorMode, deviation_to_heatmap_rgba, op_color,
 };

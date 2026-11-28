@@ -13,14 +13,15 @@
 //!   light-engagement cutting passes up to `max_thinning_multiplier` while throttling back down
 //!   inside corners and internal arcs, never accelerating plunges, ramps, or rapid moves.
 
-use chip_math::{DVec2, DVec3};
+use chip_math::DVec3;
 use chip_tools::{Tool, compute_adaptive_thinning_feed};
+
+pub use chip_cl::rebuild_segments_from_events;
 
 use crate::{
     cl_data::{ArcDir, ArcPlane, ClEvent, MotionRole},
     operation::{EffectiveCuttingParams, OperationKind},
     params::FeedOptimizationConfig,
-    toolpath::{ToolpathBuilder, ToolpathSegment3D, VerticalArcMove, XyArcMove},
 };
 
 const MIN_SPLIT_SPAN_MM: f64 = 0.05;
@@ -521,128 +522,6 @@ fn xy_arc_end_tangent(
     Some(DVec3::new(-sign * ry / r, sign * rx / r, 0.0))
 }
 
-/// Rebuilds synchronized [`ToolpathSegment3D`] spans from an optimized [`ClEvent`] stream
-/// (keeping `SimulationTimeline` and `ToolpathStats` 100% consistent with `events`).
-pub fn rebuild_segments_from_events(events: &[ClEvent]) -> Vec<ToolpathSegment3D> {
-    let mut tb = ToolpathBuilder::new("__feed_opt_rebuild");
-    for ev in events {
-        match ev {
-            ClEvent::RapidMove { end_wcs } => tb.rapid_to(*end_wcs),
-            ClEvent::LinearMove {
-                end_wcs,
-                feed_mm_min,
-                role,
-            } => tb.linear_to(*end_wcs, *feed_mm_min, *role),
-            ClEvent::ArcMove {
-                plane,
-                dir,
-                end_wcs,
-                center_offset_ijk,
-                radius_mm,
-                turns,
-                feed_mm_min,
-                role,
-            } => {
-                if let Some(prev) = tb.current_pos() {
-                    match plane {
-                        ArcPlane::XY => {
-                            let center_xy = DVec2::new(
-                                prev.x + center_offset_ijk.x,
-                                prev.y + center_offset_ijk.y,
-                            );
-                            tb.arc_xy_to(XyArcMove {
-                                end_wcs: *end_wcs,
-                                center_xy,
-                                radius_mm: *radius_mm,
-                                ccw: matches!(dir, ArcDir::CCW),
-                                turns: *turns,
-                                feed_mm_min: *feed_mm_min,
-                                role: *role,
-                            });
-                        }
-                        ArcPlane::XZ | ArcPlane::YZ => {
-                            let center_wcs = prev + *center_offset_ijk;
-                            let (a0, a1) = match plane {
-                                ArcPlane::XZ => (
-                                    (prev.z - center_wcs.z).atan2(prev.x - center_wcs.x),
-                                    (end_wcs.z - center_wcs.z).atan2(end_wcs.x - center_wcs.x),
-                                ),
-                                ArcPlane::YZ => (
-                                    (prev.z - center_wcs.z).atan2(prev.y - center_wcs.y),
-                                    (end_wcs.z - center_wcs.z).atan2(end_wcs.y - center_wcs.y),
-                                ),
-                                ArcPlane::XY => (0.0, 0.0),
-                            };
-                            let signed_sweep_rad = match dir {
-                                ArcDir::CCW => (a1 - a0).rem_euclid(std::f64::consts::TAU),
-                                ArcDir::CW => -(a0 - a1).rem_euclid(std::f64::consts::TAU),
-                            };
-                            tb.arc_vertical_plane_to(VerticalArcMove {
-                                plane: *plane,
-                                end_wcs: *end_wcs,
-                                center_wcs,
-                                radius_mm: *radius_mm,
-                                signed_sweep_rad,
-                                feed_mm_min: *feed_mm_min,
-                                role: *role,
-                            });
-                        }
-                    }
-                }
-            }
-            ClEvent::RotaryIndex {
-                angle_deg,
-                rapid,
-                feed_deg_min,
-            } => tb.rotary_index_to(*angle_deg, *rapid, *feed_deg_min),
-            ClEvent::RotaryRapidMove {
-                end_wcs,
-                rotary_deg,
-            } => tb.rotary_rapid_to(*end_wcs, *rotary_deg),
-            ClEvent::RotaryLinearMove {
-                end_wcs,
-                rotary_deg,
-                feed_mm_min,
-                effective_radius_mm,
-                role,
-            } => tb.rotary_linear_to(
-                *end_wcs,
-                *rotary_deg,
-                *feed_mm_min,
-                *effective_radius_mm,
-                *role,
-            ),
-            ClEvent::DrillCycle {
-                kind,
-                bottom_wcs,
-                r_plane_z_wcs,
-                clear_z_wcs,
-                peck_q_mm,
-                decreasing_factor,
-                min_peck_mm,
-                chip_break_retract_mm,
-                dwell_sec,
-                feed_mm_min,
-            } => {
-                tb.emit_drill_cycle(crate::toolpath::DrillCycleSpec {
-                    kind: *kind,
-                    bottom_wcs: *bottom_wcs,
-                    r_plane_z_wcs: *r_plane_z_wcs,
-                    clear_z_wcs: *clear_z_wcs,
-                    peck_q_mm: *peck_q_mm,
-                    decreasing_factor: *decreasing_factor,
-                    min_peck_mm: *min_peck_mm,
-                    chip_break_retract_mm: *chip_break_retract_mm,
-                    dwell_sec: *dwell_sec,
-                    feed_mm_min: *feed_mm_min,
-                });
-            }
-            _ => {}
-        }
-    }
-    tb.segments_wcs
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -650,7 +529,7 @@ mod tests {
     use chip_tools::{CoolantMode, CutterGeometry, SpindleDirection, Tool, ToolId};
 
     use super::*;
-    use crate::{operation::Operation, params::PassesParams};
+    use crate::{operation::Operation, params::PassesParams, toolpath::ToolpathSegment3D};
 
     fn test_flat_endmill_6mm() -> Tool {
         Tool {

@@ -3,7 +3,7 @@ use chip_tools::{AnalyticCutterEnvelope, CutterEnvelopeShape, Tool, ToolAssembly
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::metrics::SimStockColorMode;
+use crate::visual::SimStockColorMode;
 
 /// Sentinel operation tag marking unmachined raw stock across Heightfield, Tri-Dexel, and
 /// Cylindrical stock buffers (WGSL-compatible `u32`).
@@ -387,17 +387,6 @@ impl SimEngineKind {
         }
     }
 
-    pub const fn description(self) -> &'static str {
-        match self {
-            Self::Heightmap => {
-                "Fast 2.5D Z-dexel heightfield (or polar cylindrical grid on 4th-axis setups). Best for rapid interactive scrubbing and quick crash checks; vertical walls snap to XY columns and overhangs/undercuts are not modeled."
-            }
-            Self::TriDexel => {
-                "Full 3D volumetric stock using 3 orthogonal ray grids (X, Y, Z) with exact sub-voxel endpoints. Accurately models vertical walls, steep reliefs, undercuts, and 3D error-volume/RMS metrology (slower than Heightmap)."
-            }
-        }
-    }
-
     /// Parses a CLI/config engine token (`heightmap`/`2.5d`/`z-dexel`/`zdexel`,
     /// `tri-dexel`/`tridexel`/`tri_dexel`/`3d`) case-insensitively.
     pub fn from_str_loose(raw: &str) -> Result<Self, String> {
@@ -443,47 +432,23 @@ impl SimResolution {
         }
     }
 
+    /// Maximum grid cells along the longest stock axis for `engine`.
+    pub const fn max_grid_dim_for_engine(self, engine: SimEngineKind) -> usize {
+        match (engine, self) {
+            (SimEngineKind::Heightmap, Self::Standard) => 512,
+            (SimEngineKind::Heightmap, Self::Fine) => 1024,
+            (SimEngineKind::Heightmap, Self::Ultra) => 2048,
+            (SimEngineKind::TriDexel, Self::Standard) => 160,
+            (SimEngineKind::TriDexel, Self::Fine) => 288,
+            (SimEngineKind::TriDexel, Self::Ultra) => 448,
+        }
+    }
+
     pub const fn label(self) -> &'static str {
         match self {
             Self::Standard => "Standard (512)",
             Self::Fine => "Fine (1024)",
             Self::Ultra => "Ultra (2048)",
-        }
-    }
-
-    /// Engine-aware display label reflecting the actual max-axis grid dimension used by `engine`.
-    pub const fn label_for_engine(self, engine: SimEngineKind) -> &'static str {
-        match (engine, self) {
-            (SimEngineKind::Heightmap, Self::Standard) => "Standard (512)",
-            (SimEngineKind::Heightmap, Self::Fine) => "Fine (1024)",
-            (SimEngineKind::Heightmap, Self::Ultra) => "Ultra (2048)",
-            (SimEngineKind::TriDexel, Self::Standard) => "Standard (160)",
-            (SimEngineKind::TriDexel, Self::Fine) => "Fine (288)",
-            (SimEngineKind::TriDexel, Self::Ultra) => "Ultra (448)",
-        }
-    }
-
-    /// Human-readable tooltip explaining what this detail level means for `engine`.
-    pub const fn description_for_engine(self, engine: SimEngineKind) -> &'static str {
-        match (engine, self) {
-            (SimEngineKind::Heightmap, Self::Standard) => {
-                "Up to 512 cells along the longest XY stock axis. Fast interactive scrubbing and quick crash checks."
-            }
-            (SimEngineKind::Heightmap, Self::Fine) => {
-                "Up to 1024 cells along the longest XY stock axis (4x cells). Crisper small features and finer surface metrology."
-            }
-            (SimEngineKind::Heightmap, Self::Ultra) => {
-                "Up to 2048 cells along the longest XY stock axis (16x cells). Highest 2.5D detail for tiny engravings and fine finishes (uses more RAM/CPU)."
-            }
-            (SimEngineKind::TriDexel, Self::Standard) => {
-                "Up to 160 isotropic cells along the longest 3D axis across X, Y, and Z ray planes. Fast 3D volumetric verification and metrology."
-            }
-            (SimEngineKind::TriDexel, Self::Fine) => {
-                "Up to 288 isotropic cells along the longest 3D axis across X, Y, and Z ray planes (~3.2x rays). High-precision 3D walls, scallops, and error-volume benchmarking."
-            }
-            (SimEngineKind::TriDexel, Self::Ultra) => {
-                "Up to 448 isotropic cells along the longest 3D axis across X, Y, and Z ray planes (~7.8x rays). Ultra-fine 3D inspection and metrology (slower, higher memory use)."
-            }
         }
     }
 

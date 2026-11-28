@@ -1377,8 +1377,9 @@ fn render_optional_wcs_combo(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use chip_cad::{CadKernel, MonstertruckKernel, sample_machined_plate_step};
+    use chip_cad::{CadKernel, MonstertruckKernel};
     use chip_cam::{FixtureKind, WorkOffsetSlot};
+    use chip_fixtures::sample_machined_plate_step;
     use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DisplayUnit};
     use chip_project::SoftJawBoltPattern;
     use chip_project::{ProjectDocument, UndoHistory};

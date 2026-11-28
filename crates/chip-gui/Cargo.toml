@@ -13,18 +13,22 @@ workspace = true
 default = ["gtk3", "gpu-compute"]
 gtk3 = ["rfd/gtk3"]
 flatpak-portal = ["rfd/xdg-portal", "rfd/async-std", "gpu-compute"]
-gpu-compute = ["chip-sim/gpu-compute", "chip-project/gpu-compute"]
+gpu-compute = ["chip-stock/gpu-compute", "chip-sim/gpu-compute", "chip-project/gpu-compute"]
 
 [dependencies]
 chip-math.workspace = true
+chip-fixtures.workspace = true
 chip-geom2d.workspace = true
 chip-cad.workspace = true
 chip-sketch.workspace = true
-chip-tools.workspace = true
+chip-tools = { workspace = true, features = ["user-config", "fusion-import"] }
+chip-machines.workspace = true
 chip-cam.workspace = true
+chip-stock.workspace = true
 chip-sim.workspace = true
 chip-post.workspace = true
 chip-project.workspace = true
+chip-demos.workspace = true
 glam.workspace = true
 bytemuck.workspace = true
 eframe.workspace = true

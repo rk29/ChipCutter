@@ -1,4 +1,4 @@
-use chip_cam::{ArcPlane, CutterCompMode};
+use chip_cl::{ArcPlane, CutterCompMode};
 use chip_math::DVec3;
 
 use crate::profile::{CommentStyle, PostError, PostProfile};

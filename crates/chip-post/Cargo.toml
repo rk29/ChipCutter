@@ -9,9 +9,9 @@ workspace = true
 
 [dependencies]
 chip-math.workspace = true
-chip-tools.workspace = true
-chip-cam.workspace = true
-dirs.workspace = true
+chip-tools = { workspace = true, features = ["user-config"] }
+chip-machines.workspace = true
+chip-cl.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 toml.workspace = true

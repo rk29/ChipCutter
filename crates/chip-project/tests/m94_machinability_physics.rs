@@ -9,6 +9,9 @@ use chip_cam::{
     MotionRole, Operation, OperationGenRequest, OperationKind, StockConfig, StrategyParams,
     WcsOriginMode, apply_machinability_fix, generate_operation_toolpath_with_rest,
 };
+use chip_machines::{
+    builtin_carvera_air_machine, builtin_carvera_z1_machine, builtin_milo_1_5_machine,
+};
 use chip_math::{DisplayUnit, ParamLength};
 use chip_project::{
     ProjectDocument, SetupSimRequest, ToolpathCache, analyze_project_machinability,
@@ -16,10 +19,7 @@ use chip_project::{
 };
 use chip_sim::{MachineKinematicsConfig, SimComputeBackendChoice, SimEngineKind, SimResolution};
 use chip_sketch::{SketchEntity, SketchEntityEntry, SketchLayer};
-use chip_tools::{
-    ALUMINUM_6061_T6_ID, ALUMINUM_6063_T5_ID, ProjectMaterialSelection,
-    builtin_carvera_air_machine, builtin_carvera_z1_machine, builtin_milo_1_5_machine,
-};
+use chip_tools::{ALUMINUM_6061_T6_ID, ALUMINUM_6063_T5_ID, ProjectMaterialSelection};
 
 #[test]
 fn m94_bartrim_helical_bore_inner_arc_comp_chip_clear_and_tridexel_crash_free() {

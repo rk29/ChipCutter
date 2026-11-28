@@ -861,13 +861,11 @@ impl CadDocument {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    use chip_fixtures::{sample_multi_feature_bracket_step, sample_sculpted_dome_stl_bytes};
     use chip_math::approx_eq;
 
     use super::*;
-    use crate::{
-        CadKernel, MeshImportOptions, MonstertruckKernel, load_mesh_cad_document,
-        sample_multi_feature_bracket_step, sample_sculpted_dome_stl_bytes,
-    };
+    use crate::{CadKernel, MeshImportOptions, MonstertruckKernel, load_mesh_cad_document};
 
     #[test]
     fn model_transform_euler_roundtrip_lay_flat_scale_fit_and_toml_omission() {

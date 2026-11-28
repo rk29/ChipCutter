@@ -535,10 +535,7 @@ pub fn match_best_preset_for_material<'a>(
 mod tests {
     use std::collections::BTreeSet;
 
-    use crate::{
-        builtin_carvera_air_machine, builtin_carvera_machine, builtin_carvera_z1_machine,
-        default_starter_tool_library,
-    };
+    use crate::default_starter_tool_library;
 
     use super::*;
 
@@ -657,12 +654,9 @@ mod tests {
     }
 
     #[test]
-    fn match_best_preset_prefers_6063_on_carvera_1fl_oflutes_and_falls_back_cleanly() {
+    fn match_best_preset_falls_back_cleanly_on_starter_library() {
         let al6063 = resolve_workpiece_material(Some(&ProjectMaterialSelection::builtin(
             ALUMINUM_6063_T5_ID,
-        )));
-        let al6061 = resolve_workpiece_material(Some(&ProjectMaterialSelection::builtin(
-            ALUMINUM_6061_T6_ID,
         )));
         let wood = resolve_workpiece_material(Some(&ProjectMaterialSelection::builtin(
             HARDWOOD_PLYWOOD_ID,
@@ -672,49 +666,6 @@ mod tests {
         )));
         let delrin =
             resolve_workpiece_material(Some(&ProjectMaterialSelection::builtin(ACETAL_DELRIN_ID)));
-
-        for machine in [
-            builtin_carvera_machine(),
-            builtin_carvera_air_machine(),
-            builtin_carvera_z1_machine(),
-        ] {
-            // T1 (3.175x12 1FL) and T2 (3.175x25 1FL) must pick 6063 preset for 6063-T5 and 6061 preset for 6061-T6
-            let t1 = machine.tools.iter().find(|t| t.tool_number == 1).unwrap();
-            let t2 = machine.tools.iter().find(|t| t.tool_number == 2).unwrap();
-            let t3 = machine.tools.iter().find(|t| t.tool_number == 3).unwrap();
-            let t4 = machine.tools.iter().find(|t| t.tool_number == 4).unwrap();
-
-            for t in [t1, t2, t3, t4] {
-                let p6063 = match_best_preset_for_material(t, &al6063).unwrap();
-                assert!(
-                    p6063.material.contains("6063"),
-                    "machine '{}' T{} must pick 6063 preset for aluminum-6063-t5, got '{}'",
-                    machine.id,
-                    t.tool_number,
-                    p6063.name
-                );
-                assert_eq!(p6063.coolant_override, Some(CoolantMode::AirBlast));
-
-                let p6061 = match_best_preset_for_material(t, &al6061).unwrap();
-                assert!(
-                    p6061.material.contains("6061"),
-                    "machine '{}' T{} must keep picking 6061 preset for aluminum-6061-t6, got '{}'",
-                    machine.id,
-                    t.tool_number,
-                    p6061.name
-                );
-            }
-
-            // T2 6063-T5 preset must have safer reduced stepdown & stepover than its 6061 preset
-            let t2_6061 = match_best_preset_for_material(t2, &al6061).unwrap();
-            let t2_6063 = match_best_preset_for_material(t2, &al6063).unwrap();
-            assert!(t2_6063.default_stepdown_mm < t2_6061.default_stepdown_mm);
-            assert!(t2_6063.default_stepover_mm < t2_6061.default_stepover_mm);
-
-            // T1 with Hardwood picks the wood preset
-            let t1_wood = match_best_preset_for_material(t1, &wood).unwrap();
-            assert!(t1_wood.id.ends_with("_wood"));
-        }
 
         // Generic starter library T1 has no 6063 preset -> falls back to Aluminum 6061 preset
         let starter = default_starter_tool_library();

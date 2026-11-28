@@ -10,10 +10,13 @@ use chip_cam::{
 };
 use chip_math::{ArcPolyline2D, DMat4, DVec2, DVec3, DisplayUnit, MM_PER_INCH, Ray3, RigidFrame3};
 #[cfg(feature = "gpu-compute")]
-use chip_sim::{GpuStockRenderHandle, SimStockColorMode};
-use chip_sim::{SimStockMesh, SimToolMesh};
+use chip_sim::SimStockColorMode;
+use chip_sim::SimStockMesh;
 use chip_sketch::{SketchLayer, SketchPickHit};
 
+#[cfg(feature = "gpu-compute")]
+use super::sim_gpu_render::GpuStockRenderHandle;
+use super::tool_mesh::SimToolMesh;
 use crate::{camera::CadCamera, theme::AppTheme};
 
 /// Pass #6 simulation machined-stock render source consumed by [`crate::viewport::ViewportRenderer`].

@@ -14,7 +14,6 @@ pub mod typography;
 pub use curve_fit::{circumcircle_through_three_points, fit_bezpath_to_arc_polylines};
 pub use dxf_import::{
     DxfImportError, DxfImportOptions, DxfImportReport, import_dxf_bytes, import_dxf_path,
-    sample_router_panel_dxf,
 };
 pub use heal_chain::{
     HealedSketchGeometry, RawImportedItem, classify_planar_regions_from_candidates,
@@ -35,7 +34,6 @@ pub use primitives::{
 pub use snap::{SketchSnapContext, SketchSnapResult, SnapKind, snap_sketch_point_2d};
 pub use svg_import::{
     SvgImportError, SvgImportOptions, SvgImportReport, import_svg_bytes, import_svg_path,
-    sample_badge_logo_svg,
 };
 pub use typography::{
     BUILTIN_DEJAVU_SANS_BOLD_TTF, CustomFontMap, HersheyFontKind, HersheyLayoutParams,
@@ -46,6 +44,7 @@ pub use typography::{
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    use chip_fixtures::{sample_badge_logo_svg, sample_router_panel_dxf};
     use chip_math::{Aabb2, ArcSegment2D, DVec2, EvalContext, ParamLength, approx_eq};
     use kurbo::{BezPath, Circle as KCircle, Shape as _};
 

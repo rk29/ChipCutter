@@ -1,17 +1,10 @@
 use std::{path::Path, sync::Arc};
 
 use chip_cad::{CadDocument, CadPicker, TopologyGraph};
+use chip_demos::{SampleBuildContext, SampleFocusHint};
 use chip_project::{
-    ModelEntry, OperationReloadOutcome, ProjectDocument, build_adaptive_rest_demo_project,
-    build_cam_torture_project, build_curved_deburr_3d_project, build_dovetail_rail_keyway_project,
-    build_feed_opt_pocket_project, build_flip_jig_softjaws_project,
-    build_indexed_model_bounds_project, build_keepout_clamps_project,
-    build_mesh_3mf_bracket_project, build_multi_feature_bracket_project,
-    build_relief_wave_mesh_project, build_revision_v1_demo_project,
-    build_rotary_helical_flute_project, build_rotary_shaft_preview_project,
-    build_sculpted_mesh_dome_project, build_thread_mill_manifold_project,
-    build_two_sided_vise_workholding_project, build_undercut_deburr_block_project,
-    portable_model_path, rebind_project_to_reloaded_cad,
+    ModelEntry, OperationReloadOutcome, ProjectDocument, portable_model_path,
+    rebind_project_to_reloaded_cad,
 };
 
 use crate::{
@@ -73,6 +66,7 @@ impl ChipCutterApp {
         self.external_step_modified = false;
         let was_model_empty = self.model.is_none();
         let mut fit_camera = true;
+        let mut auto_generate_and_sim = false;
 
         match purpose {
             LoadPurpose::SeedBlankSample => {
@@ -80,7 +74,7 @@ impl ChipCutterApp {
                 self.project_file_path = None;
                 let mut proj = ProjectDocument::new("Untitled Job");
                 proj.display_units = self.prefs.default_units;
-                if self.prefs.default_machine_id != chip_tools::DEFAULT_MACHINE_ID
+                if self.prefs.default_machine_id != chip_machines::DEFAULT_MACHINE_ID
                     && let Some(m) = self
                         .machines
                         .iter()
@@ -100,370 +94,90 @@ impl ChipCutterApp {
                 self.project = proj;
                 self.sync_active_machine_tools();
             }
-            LoadPurpose::SeedMultiFeatureBracket => {
+            LoadPurpose::SeedSample(sample_id) => {
+                let spec = sample_id.spec();
                 self.prepare_for_project_replacement(None, None);
                 self.project_file_path = None;
                 self.project.machine_id = None;
                 self.sync_active_machine_tools();
-                self.project = build_multi_feature_bracket_project(
-                    &doc,
-                    doc.source_name.clone(),
-                    &sha256_hex,
-                    &self.global_tools.tools,
-                );
-                self.sync_active_machine_tools();
-                if !self.project.setups[0].operations.is_empty() {
-                    self.inspector_focus = InspectorFocus::Operation {
-                        setup_idx: 0,
-                        op_idx: 0,
-                    };
-                    self.op_tab = OperationTab::Geometry;
+                match sample_id.build_project(&SampleBuildContext {
+                    doc: Some(&doc),
+                    topo: Some(&topo),
+                    asset_path: Some(doc.source_name.clone()),
+                    sha256_hex: &sha256_hex,
+                    available_tools: &self.global_tools.tools,
+                    empty_project: false,
+                }) {
+                    Ok(proj) => self.project = proj,
+                    Err(err) => {
+                        self.logs.push(format!(
+                            "Failed to seed sample '{}': {err}",
+                            spec.canonical_slug
+                        ));
+                    }
                 }
-            }
-            LoadPurpose::SeedCamTortureBlock => {
-                self.prepare_for_project_replacement(None, None);
-                self.project_file_path = None;
-                self.project.machine_id = None;
                 self.sync_active_machine_tools();
-                self.project = build_cam_torture_project(
-                    &doc,
-                    doc.source_name.clone(),
-                    &sha256_hex,
-                    &self.global_tools.tools,
-                );
-                self.sync_active_machine_tools();
-                if self.project.setups[0].operations.len() > 1 {
-                    self.inspector_focus = InspectorFocus::Operation {
-                        setup_idx: 0,
-                        op_idx: 1,
-                    };
-                    self.op_tab = OperationTab::Passes;
+                if spec.prefer_tridexel_sim {
+                    self.sim_panel.engine = chip_sim::SimEngineKind::TriDexel;
                 }
-            }
-            LoadPurpose::SeedAdaptiveRestDemo => {
-                self.prepare_for_project_replacement(None, None);
-                self.project_file_path = None;
-                self.project.machine_id = None;
-                self.sync_active_machine_tools();
-                self.project = build_adaptive_rest_demo_project(
-                    &doc,
-                    doc.source_name.clone(),
-                    &sha256_hex,
-                    &self.global_tools.tools,
-                );
-                self.sync_active_machine_tools();
-                if self.project.setups[0].operations.len() > 3 {
-                    self.inspector_focus = InspectorFocus::Operation {
-                        setup_idx: 0,
-                        op_idx: 3,
-                    };
-                    self.op_tab = OperationTab::Passes;
+                if spec.show_fixtures {
+                    self.highlight.show_fixtures = true;
                 }
-            }
-            LoadPurpose::SeedRevisionDemoV1 => {
-                self.prepare_for_project_replacement(None, None);
-                self.project_file_path = None;
-                self.project.machine_id = None;
-                self.sync_active_machine_tools();
-                self.project = build_revision_v1_demo_project(
-                    &doc,
-                    &topo,
-                    doc.source_name.clone(),
-                    &sha256_hex,
-                    &self.global_tools.tools,
-                );
-                self.sync_active_machine_tools();
-                self.inspector_focus = InspectorFocus::Operation {
-                    setup_idx: 0,
-                    op_idx: 1,
-                };
-                self.op_tab = OperationTab::Passes;
-            }
-            LoadPurpose::SeedSculptedMeshDome => {
-                self.prepare_for_project_replacement(None, None);
-                self.project_file_path = None;
-                self.project.machine_id = None;
-                self.sync_active_machine_tools();
-                self.project = build_sculpted_mesh_dome_project(
-                    doc.source_name.clone(),
-                    &sha256_hex,
-                    &self.global_tools.tools,
-                );
-                self.sync_active_machine_tools();
-                if !self.project.setups[0].operations.is_empty() {
-                    self.inspector_focus = InspectorFocus::Operation {
-                        setup_idx: 0,
-                        op_idx: self.project.setups[0].operations.len().saturating_sub(1),
-                    };
-                    self.op_tab = OperationTab::Passes;
-                } else {
-                    self.inspector_focus = InspectorFocus::Setup { setup_idx: 0 };
-                    self.setup_tab = SetupTab::Wcs;
+                if spec.hide_27pt_dots {
+                    self.show_27pt_dots = false;
                 }
-                self.show_27pt_dots = false;
-            }
-            LoadPurpose::SeedReliefWaveMesh => {
-                self.prepare_for_project_replacement(None, None);
-                self.project_file_path = None;
-                self.project.machine_id = None;
-                self.sync_active_machine_tools();
-                self.project = build_relief_wave_mesh_project(
-                    doc.source_name.clone(),
-                    &sha256_hex,
-                    &self.global_tools.tools,
-                );
-                self.sync_active_machine_tools();
-                if self.project.setups[0].operations.len() > 1 {
-                    self.inspector_focus = InspectorFocus::Operation {
-                        setup_idx: 0,
-                        op_idx: 1,
-                    };
-                    self.op_tab = OperationTab::Passes;
-                } else {
-                    self.inspector_focus = InspectorFocus::Setup { setup_idx: 0 };
-                    self.setup_tab = SetupTab::Wcs;
+                let op_count = self
+                    .project
+                    .setups
+                    .first()
+                    .map_or(0, |s| s.operations.len());
+                match spec.focus_hint {
+                    SampleFocusHint::Operation {
+                        op_idx,
+                        geometry_tab,
+                    } if op_idx < op_count => {
+                        self.inspector_focus = InspectorFocus::Operation {
+                            setup_idx: 0,
+                            op_idx,
+                        };
+                        self.op_tab = if geometry_tab {
+                            OperationTab::Geometry
+                        } else {
+                            OperationTab::Passes
+                        };
+                    }
+                    SampleFocusHint::LastOperationPasses if op_count > 0 => {
+                        self.inspector_focus = InspectorFocus::Operation {
+                            setup_idx: 0,
+                            op_idx: op_count.saturating_sub(1),
+                        };
+                        self.op_tab = OperationTab::Passes;
+                    }
+                    SampleFocusHint::SetupFixtures => {
+                        self.inspector_focus = InspectorFocus::Setup { setup_idx: 0 };
+                        self.setup_tab = SetupTab::Fixtures;
+                    }
+                    SampleFocusHint::SketchEntity {
+                        sketch_idx,
+                        entity_idx,
+                    } => {
+                        self.inspector_focus = InspectorFocus::Sketch { sketch_idx };
+                        self.selected_sketch_entity_idx = Some(entity_idx);
+                    }
+                    _ => {
+                        if op_count == 0
+                            && matches!(
+                                spec.focus_hint,
+                                SampleFocusHint::LastOperationPasses
+                                    | SampleFocusHint::Operation { .. }
+                            )
+                        {
+                            self.inspector_focus = InspectorFocus::Setup { setup_idx: 0 };
+                            self.setup_tab = SetupTab::Wcs;
+                        }
+                    }
                 }
-                self.show_27pt_dots = false;
-            }
-            LoadPurpose::SeedRotaryIndexedShaft => {
-                self.prepare_for_project_replacement(None, None);
-                self.project_file_path = None;
-                self.project.machine_id = None;
-                self.sync_active_machine_tools();
-                self.project = build_rotary_shaft_preview_project(
-                    doc.source_name.clone(),
-                    &sha256_hex,
-                    &self.global_tools.tools,
-                );
-                self.sync_active_machine_tools();
-                self.inspector_focus = InspectorFocus::Operation {
-                    setup_idx: 0,
-                    op_idx: 0,
-                };
-                self.op_tab = OperationTab::Passes;
-                self.show_27pt_dots = false;
-            }
-            LoadPurpose::SeedRotaryHelicalFlute => {
-                self.prepare_for_project_replacement(None, None);
-                self.project_file_path = None;
-                self.project.machine_id = None;
-                self.sync_active_machine_tools();
-                self.project = build_rotary_helical_flute_project(
-                    doc.source_name.clone(),
-                    &sha256_hex,
-                    &self.global_tools.tools,
-                );
-                self.sync_active_machine_tools();
-                self.inspector_focus = InspectorFocus::Operation {
-                    setup_idx: 0,
-                    op_idx: 1,
-                };
-                self.op_tab = OperationTab::Passes;
-                self.show_27pt_dots = false;
-            }
-            LoadPurpose::SeedThreadMillManifold => {
-                self.prepare_for_project_replacement(None, None);
-                self.project_file_path = None;
-                self.project.machine_id = None;
-                self.sync_active_machine_tools();
-                self.project = build_thread_mill_manifold_project(
-                    &doc,
-                    doc.source_name.clone(),
-                    &sha256_hex,
-                    &self.global_tools.tools,
-                );
-                self.sync_active_machine_tools();
-                if self.project.setups[0].operations.len() > 3 {
-                    self.inspector_focus = InspectorFocus::Operation {
-                        setup_idx: 0,
-                        op_idx: 3,
-                    };
-                    self.op_tab = OperationTab::Passes;
-                }
-                self.show_27pt_dots = false;
-            }
-            LoadPurpose::SeedTwoSidedViseWorkholding => {
-                self.prepare_for_project_replacement(None, None);
-                self.project_file_path = None;
-                self.project.machine_id = None;
-                self.sync_active_machine_tools();
-                self.project = build_two_sided_vise_workholding_project(
-                    doc.source_name.clone(),
-                    &sha256_hex,
-                    &self.global_tools.tools,
-                );
-                self.sync_active_machine_tools();
-                self.inspector_focus = InspectorFocus::Setup { setup_idx: 0 };
-                self.setup_tab = SetupTab::Fixtures;
-                self.highlight.show_fixtures = true;
-                self.show_27pt_dots = false;
-            }
-            LoadPurpose::SeedUndercutAndDeburrBlock => {
-                self.prepare_for_project_replacement(None, None);
-                self.project_file_path = None;
-                self.project.machine_id = None;
-                self.sync_active_machine_tools();
-                self.project = build_undercut_deburr_block_project(
-                    &doc,
-                    doc.source_name.clone(),
-                    &sha256_hex,
-                    &self.global_tools.tools,
-                );
-                self.sync_active_machine_tools();
-                self.sim_panel.engine = chip_sim::SimEngineKind::TriDexel;
-                if self.project.setups[0].operations.len() > 3 {
-                    self.inspector_focus = InspectorFocus::Operation {
-                        setup_idx: 0,
-                        op_idx: 3,
-                    };
-                    self.op_tab = OperationTab::Passes;
-                }
-                self.show_27pt_dots = false;
-            }
-            LoadPurpose::SeedFeedOptPocket => {
-                self.prepare_for_project_replacement(None, None);
-                self.project_file_path = None;
-                self.project.machine_id = None;
-                self.sync_active_machine_tools();
-                self.project = build_feed_opt_pocket_project(
-                    &doc,
-                    doc.source_name.clone(),
-                    &sha256_hex,
-                    &self.global_tools.tools,
-                );
-                self.sync_active_machine_tools();
-                if !self.project.setups[0].operations.is_empty() {
-                    self.inspector_focus = InspectorFocus::Operation {
-                        setup_idx: 0,
-                        op_idx: 0,
-                    };
-                    self.op_tab = OperationTab::Passes;
-                }
-                self.show_27pt_dots = false;
-            }
-            LoadPurpose::SeedFlipJigSoftJaws => {
-                self.prepare_for_project_replacement(None, None);
-                self.project_file_path = None;
-                self.project.machine_id = None;
-                self.sync_active_machine_tools();
-                self.project = build_flip_jig_softjaws_project(
-                    &doc,
-                    doc.source_name.clone(),
-                    &sha256_hex,
-                    &self.global_tools.tools,
-                );
-                self.sync_active_machine_tools();
-                self.sim_panel.engine = chip_sim::SimEngineKind::TriDexel;
-                self.inspector_focus = InspectorFocus::Setup { setup_idx: 0 };
-                self.setup_tab = SetupTab::Fixtures;
-                self.highlight.show_fixtures = true;
-                self.show_27pt_dots = false;
-            }
-            LoadPurpose::SeedCurvedDeburr3D => {
-                self.prepare_for_project_replacement(None, None);
-                self.project_file_path = None;
-                self.project.machine_id = None;
-                self.sync_active_machine_tools();
-                self.project = build_curved_deburr_3d_project(
-                    &doc,
-                    doc.source_name.clone(),
-                    &sha256_hex,
-                    &self.global_tools.tools,
-                );
-                self.sync_active_machine_tools();
-                self.sim_panel.engine = chip_sim::SimEngineKind::TriDexel;
-                if self.project.setups[0].operations.len() > 3 {
-                    self.inspector_focus = InspectorFocus::Operation {
-                        setup_idx: 0,
-                        op_idx: 3,
-                    };
-                    self.op_tab = OperationTab::Passes;
-                }
-                self.show_27pt_dots = false;
-            }
-            LoadPurpose::SeedDovetailRailKeyway => {
-                self.prepare_for_project_replacement(None, None);
-                self.project_file_path = None;
-                self.project.machine_id = None;
-                self.sync_active_machine_tools();
-                self.project = build_dovetail_rail_keyway_project(
-                    &doc,
-                    doc.source_name.clone(),
-                    &sha256_hex,
-                    &self.global_tools.tools,
-                );
-                self.sync_active_machine_tools();
-                self.sim_panel.engine = chip_sim::SimEngineKind::TriDexel;
-                if self.project.setups[0].operations.len() > 3 {
-                    self.inspector_focus = InspectorFocus::Operation {
-                        setup_idx: 0,
-                        op_idx: 3,
-                    };
-                    self.op_tab = OperationTab::Passes;
-                }
-                self.show_27pt_dots = false;
-            }
-            LoadPurpose::SeedMesh3mfBracket => {
-                self.prepare_for_project_replacement(None, None);
-                self.project_file_path = None;
-                self.project.machine_id = None;
-                self.sync_active_machine_tools();
-                self.project = build_mesh_3mf_bracket_project(
-                    doc.source_name.clone(),
-                    &sha256_hex,
-                    &self.global_tools.tools,
-                );
-                self.sync_active_machine_tools();
-                if !self.project.setups[0].operations.is_empty() {
-                    self.inspector_focus = InspectorFocus::Operation {
-                        setup_idx: 0,
-                        op_idx: self.project.setups[0].operations.len().saturating_sub(1),
-                    };
-                    self.op_tab = OperationTab::Passes;
-                }
-                self.show_27pt_dots = false;
-            }
-            LoadPurpose::SeedKeepOutClamps => {
-                self.prepare_for_project_replacement(None, None);
-                self.project_file_path = None;
-                self.project.machine_id = None;
-                self.sync_active_machine_tools();
-                self.project = build_keepout_clamps_project(
-                    &doc,
-                    doc.source_name.clone(),
-                    &sha256_hex,
-                    &self.global_tools.tools,
-                );
-                self.sync_active_machine_tools();
-                if !self.project.setups[0].operations.is_empty() {
-                    self.inspector_focus = InspectorFocus::Operation {
-                        setup_idx: 0,
-                        op_idx: 0,
-                    };
-                    self.op_tab = OperationTab::Geometry;
-                }
-                self.highlight.show_fixtures = true;
-                self.show_27pt_dots = false;
-            }
-            LoadPurpose::SeedIndexedModelBounds => {
-                self.prepare_for_project_replacement(None, None);
-                self.project_file_path = None;
-                self.project.machine_id = None;
-                self.sync_active_machine_tools();
-                self.project = build_indexed_model_bounds_project(
-                    doc.source_name.clone(),
-                    &sha256_hex,
-                    &self.global_tools.tools,
-                );
-                self.sync_active_machine_tools();
-                if !self.project.setups[0].operations.is_empty() {
-                    self.inspector_focus = InspectorFocus::Operation {
-                        setup_idx: 0,
-                        op_idx: 0,
-                    };
-                    self.op_tab = OperationTab::Geometry;
-                }
-                self.show_27pt_dots = false;
+                auto_generate_and_sim = spec.auto_generate_and_sim;
             }
             LoadPurpose::FreshImport { update_model_entry } => {
                 self.sim_panel.reset_for_new_project();
@@ -585,26 +299,7 @@ impl ChipCutterApp {
         self.cached_frame_geo = None;
         self.refresh_dependent_expressions();
 
-        if matches!(
-            purpose,
-            LoadPurpose::SeedCamTortureBlock
-                | LoadPurpose::SeedAdaptiveRestDemo
-                | LoadPurpose::SeedRevisionDemoV1
-                | LoadPurpose::SeedSculptedMeshDome
-                | LoadPurpose::SeedReliefWaveMesh
-                | LoadPurpose::SeedRotaryIndexedShaft
-                | LoadPurpose::SeedRotaryHelicalFlute
-                | LoadPurpose::SeedThreadMillManifold
-                | LoadPurpose::SeedTwoSidedViseWorkholding
-                | LoadPurpose::SeedUndercutAndDeburrBlock
-                | LoadPurpose::SeedFeedOptPocket
-                | LoadPurpose::SeedFlipJigSoftJaws
-                | LoadPurpose::SeedCurvedDeburr3D
-                | LoadPurpose::SeedDovetailRailKeyway
-                | LoadPurpose::SeedMesh3mfBracket
-                | LoadPurpose::SeedKeepOutClamps
-                | LoadPurpose::SeedIndexedModelBounds
-        ) {
+        if auto_generate_and_sim {
             self.auto_sim_after_gen = true;
             self.trigger_generate_dirty(None, None);
         }

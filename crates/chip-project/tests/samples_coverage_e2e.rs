@@ -9,25 +9,29 @@ use std::path::PathBuf;
 
 use chip_cad::{
     CadDocument, CadKernel, MeshFormat, MeshImportOptions, MeshUnitKind, MonstertruckKernel,
-    load_mesh_cad_document, sample_curved_deburr_overhang_step_bytes,
-    sample_dovetail_rail_keyway_step_bytes, sample_indexed_4sided_bar_step_bytes,
-    sample_keepout_clamp_plate_step_bytes, sample_overhang_flange_step,
-    sample_sculpted_mount_3mf_bytes, sample_sloped_boss_stepped_pocket_step,
-    sample_svg_badge_bytes, sample_undercut_deburr_block_step, tutorial_adaptive_pocket_step,
-    tutorial_contour_plate_step,
+    load_mesh_cad_document,
 };
 use chip_cam::{
     DovetailMode, FixedBoxZAlign, FixtureKind, MachiningBoundaryMode, OperationKind,
     OperationRotaryMode, SlotUndercutMode, StockConfig, StrategyParams, UndercutEntryMode,
 };
-use chip_math::DEFAULT_TESS_CHORD_TOL_MM;
-use chip_post::builtin_post_profiles;
-use chip_project::{
-    ProjectDocument, SetupPostRequest, SetupSimRequest, ToolpathCache,
+use chip_demos::{
     build_curved_deburr_3d_project, build_dovetail_rail_keyway_project,
     build_feed_opt_pocket_project, build_flip_jig_softjaws_project,
     build_indexed_model_bounds_project, build_keepout_clamps_project,
-    build_mesh_3mf_bracket_project, build_svg_badge_sign_project, compute_sha256_hex,
+    build_mesh_3mf_bracket_project, build_svg_badge_sign_project,
+};
+use chip_fixtures::{
+    sample_curved_deburr_overhang_step_bytes, sample_dovetail_rail_keyway_step_bytes,
+    sample_indexed_4sided_bar_step_bytes, sample_keepout_clamp_plate_step_bytes,
+    sample_overhang_flange_step, sample_sculpted_mount_3mf_bytes,
+    sample_sloped_boss_stepped_pocket_step, sample_svg_badge_bytes,
+    sample_undercut_deburr_block_step, tutorial_adaptive_pocket_step, tutorial_contour_plate_step,
+};
+use chip_math::DEFAULT_TESS_CHORD_TOL_MM;
+use chip_post::builtin_post_profiles;
+use chip_project::{
+    ProjectDocument, SetupPostRequest, SetupSimRequest, ToolpathCache, compute_sha256_hex,
     generate_project_blocking, post_process_project_setup, resolve_kinematics_for_key,
     simulate_all_setups, simulate_project_setup, validate_project,
 };

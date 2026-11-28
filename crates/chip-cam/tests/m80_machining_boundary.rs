@@ -2,10 +2,7 @@
 
 use std::sync::atomic::AtomicBool;
 
-use chip_cad::{
-    CadKernel, MeshImportOptions, MonstertruckKernel, load_mesh_cad_document,
-    sample_machined_plate_step,
-};
+use chip_cad::{CadKernel, MeshImportOptions, MonstertruckKernel, load_mesh_cad_document};
 use chip_cam::{
     BoxAnchor27, Deburr3DParams, ExtractedSelectionSummary, GeometrySelectionItem, HeightReference,
     HeightSpec, MachiningBoundaryConfig, MachiningBoundaryMode, MotionRole, Operation,
@@ -14,6 +11,7 @@ use chip_cam::{
     WcsOriginMode, WorkOffsetSlot, generate_operation_toolpath_with_rest,
     resolve_3d_boundary_config_detailed, resolve_3d_containment_region_detailed, stock_xy_region,
 };
+use chip_fixtures::sample_machined_plate_step;
 use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DVec2, DVec3, DisplayUnit, ParamLength};
 use chip_sim::{
     MachineKinematicsConfig, SetupSimulationInput, SimComputeBackendChoice, SimEngineKind,

@@ -1215,12 +1215,12 @@ mod tests {
 
     use chip_cad::{
         CadDocument, CadKernel, MeshImportOptions, MonstertruckKernel, load_mesh_cad_document,
-        sample_machined_plate_step, sample_rotary_shaft_stl_bytes,
     };
     use chip_cam::{
         AxisAnchor, BoxAnchor27, ClEvent, MotionRole, RotaryAxisKind, RotaryDriveMode, Setup,
         StockAxis, StockConfig, ToolpathBuilder, WcsOriginMode, WorkOffsetSlot, XyArcMove,
     };
+    use chip_fixtures::{sample_machined_plate_step, sample_rotary_shaft_stl_bytes};
     use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DVec2, DVec3, DisplayUnit, ParamLength, approx_eq};
     use chip_stock::{
         DexelSpan, RAW_STOCK_SIDE_COLOR, RAW_STOCK_TOP_COLOR, UNCUT_OP_IDX,
@@ -1631,7 +1631,7 @@ mod tests {
 
     #[test]
     fn off_centerline_simultaneous_4axis_fault_injection_catches_flank_gouge_and_holder_crash() {
-        let stl = chip_cad::sample_helical_flute_shaft_stl_bytes();
+        let stl = chip_fixtures::sample_helical_flute_shaft_stl_bytes();
         let doc = load_mesh_cad_document(
             "helical_flute_shaft.stl",
             &stl,
@@ -2437,7 +2437,7 @@ mod tests {
         }
 
         // Case 2: Simultaneous 4-axis off-centerline helical flute shaft + flank gouge & holder crash
-        let stl_helical = chip_cad::sample_helical_flute_shaft_stl_bytes();
+        let stl_helical = chip_fixtures::sample_helical_flute_shaft_stl_bytes();
         let doc_helical = load_mesh_cad_document(
             "helical_flute_shaft.stl",
             &stl_helical,
@@ -3352,12 +3352,12 @@ mod tests {
     fn rotary_4axis_sim_and_2linear_quality_oracle_zero_staircase_bias_and_gouge_free() {
         use std::sync::atomic::AtomicBool;
 
-        use chip_cad::sample_helical_flute_shaft_stl_bytes;
         use chip_cam::{
             Operation, OperationGenRequest, OperationKind, Rotary4AxisPattern,
             Rotary4AxisSimParams, RotaryPatternMode, RotaryTiltMode, StrategyParams,
             generate_operation_toolpath_with_rest,
         };
+        use chip_fixtures::sample_helical_flute_shaft_stl_bytes;
         use chip_tools::CutterGeometry;
 
         let lib = default_starter_tool_library();
@@ -3675,12 +3675,13 @@ mod tests {
     fn indexed_step_cylindrical_target_metrics_non_zero_rms_and_cpu_gpu_parity() {
         use std::sync::atomic::AtomicBool;
 
-        use chip_cad::{SurfaceKind, tutorial_indexed_4side_block_step};
+        use chip_cad::SurfaceKind;
         use chip_cam::{
             FixedBoxXyAlign, FixedBoxZAlign, GeometrySelectionItem, Operation, OperationGenRequest,
             OperationKind, OperationRotaryMode, compute_index_angle_for_normal,
             generate_operation_toolpath_with_rest,
         };
+        use chip_fixtures::tutorial_indexed_4side_block_step;
 
         let step = tutorial_indexed_4side_block_step().unwrap();
         let doc = MonstertruckKernel

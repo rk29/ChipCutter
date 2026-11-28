@@ -1,9 +1,9 @@
 use chip_math::DVec3;
 
 use crate::{
-    mesher_common::{RAW_STOCK_SIDE_COLOR, RAW_STOCK_TOP_COLOR, op_color},
-    metrics::{SimStockColorMode, deviation_to_heatmap_rgba},
     types::{SimColoredVertex, SimMeshOptions, SimStockMesh},
+    visual::{RAW_STOCK_SIDE_COLOR, RAW_STOCK_TOP_COLOR, op_color},
+    visual::{SimStockColorMode, deviation_to_heatmap_rgba},
 };
 
 use super::CylindricalStock;

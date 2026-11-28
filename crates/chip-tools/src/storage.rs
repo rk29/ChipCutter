@@ -1,8 +1,12 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(feature = "user-config")]
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+#[cfg(feature = "user-config")]
+use crate::preset_store::chipcutter_config_dir;
 use crate::{
     builtin::default_starter_tool_library,
     model::{Tool, ToolId, ToolValidationError},
@@ -115,12 +119,14 @@ impl ToolLibrary {
 
 /// Returns the default OS user configuration path for the global ChipCutter tool library
 /// (e.g., `~/.config/chipcutter/default.tools.toml` on Linux).
+#[cfg(feature = "user-config")]
 pub fn default_global_tool_library_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|base| base.join("chipcutter").join("default.tools.toml"))
+    chipcutter_config_dir().map(|base| base.join("default.tools.toml"))
 }
 
 /// Loads the user's global `.tools.toml` if present, otherwise initializes and returns the
 /// built-in starter library.
+#[cfg(feature = "user-config")]
 pub fn load_or_default_global_library() -> ToolLibrary {
     if let Some(path) = default_global_tool_library_path()
         && path.exists()

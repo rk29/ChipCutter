@@ -698,10 +698,10 @@ name = "chip-cad"
 version = "0.26.0"
 dependencies = [
  "chip-bvh",
+ "chip-fixtures",
  "chip-math",
  "monstertruck-io",
  "monstertruck-meshing",
- "monstertruck-modeling",
  "monstertruck-topology",
  "serde",
  "thiserror 2.0.21",
@@ -714,7 +714,10 @@ version = "0.26.0"
 dependencies = [
  "chip-bvh",
  "chip-cad",
+ "chip-cl",
+ "chip-fixtures",
  "chip-geom2d",
+ "chip-machines",
  "chip-math",
  "chip-sim",
  "chip-sketch",
@@ -726,11 +729,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "chip-cl"
+version = "0.26.0"
+dependencies = [
+ "chip-math",
+ "chip-tools",
+ "serde",
+]
+
+[[package]]
 name = "chip-cli"
 version = "0.26.0"
 dependencies = [
  "chip-cad",
  "chip-cam",
+ "chip-demos",
+ "chip-fixtures",
+ "chip-machines",
  "chip-math",
  "chip-post",
  "chip-project",
@@ -741,6 +756,31 @@ dependencies = [
  "serde",
  "serde_json",
  "winresource",
+]
+
+[[package]]
+name = "chip-demos"
+version = "0.26.0"
+dependencies = [
+ "chip-cad",
+ "chip-cam",
+ "chip-fixtures",
+ "chip-math",
+ "chip-project",
+ "chip-sketch",
+ "chip-tools",
+]
+
+[[package]]
+name = "chip-fixtures"
+version = "0.26.0"
+dependencies = [
+ "chip-math",
+ "dxf",
+ "monstertruck-io",
+ "monstertruck-modeling",
+ "thiserror 2.0.21",
+ "zip",
 ]
 
 [[package]]
@@ -759,12 +799,16 @@ dependencies = [
  "bytemuck",
  "chip-cad",
  "chip-cam",
+ "chip-demos",
+ "chip-fixtures",
  "chip-geom2d",
+ "chip-machines",
  "chip-math",
  "chip-post",
  "chip-project",
  "chip-sim",
  "chip-sketch",
+ "chip-stock",
  "chip-tools",
  "clap",
  "crossbeam-channel",
@@ -789,6 +833,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "chip-machines"
+version = "0.26.0"
+dependencies = [
+ "chip-math",
+ "chip-tools",
+ "serde",
+ "thiserror 2.0.21",
+ "toml 0.8.23",
+]
+
+[[package]]
 name = "chip-math"
 version = "0.26.0"
 dependencies = [
@@ -801,10 +856,10 @@ dependencies = [
 name = "chip-post"
 version = "0.26.0"
 dependencies = [
- "chip-cam",
+ "chip-cl",
+ "chip-machines",
  "chip-math",
  "chip-tools",
- "dirs",
  "serde",
  "thiserror 2.0.21",
  "toml 0.8.23",
@@ -817,7 +872,10 @@ dependencies = [
  "chip-bvh",
  "chip-cad",
  "chip-cam",
+ "chip-demos",
+ "chip-fixtures",
  "chip-geom2d",
+ "chip-machines",
  "chip-math",
  "chip-post",
  "chip-sim",
@@ -839,6 +897,8 @@ dependencies = [
  "chip-bvh",
  "chip-cad",
  "chip-cam",
+ "chip-fixtures",
+ "chip-machines",
  "chip-math",
  "chip-sketch",
  "chip-stock",
@@ -850,6 +910,7 @@ dependencies = [
 name = "chip-sketch"
 version = "0.26.0"
 dependencies = [
+ "chip-fixtures",
  "chip-geom2d",
  "chip-math",
  "dxf",

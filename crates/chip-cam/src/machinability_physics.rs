@@ -1,9 +1,9 @@
 //! Exact `f64` cutting-mechanics, flute-aware stepped cantilever deflection/stress,
 //! spindle power-curve derating, and concave internal-bore engagement physics (`chip-cam`).
 
+use chip_machines::MachineSpindleSpec;
 use chip_tools::{
-    CutterGeometry, MachineSpindleSpec, Tool, WorkpieceMaterialProfile, chipload_from_feed,
-    surface_speed_from_rpm,
+    CutterGeometry, Tool, WorkpieceMaterialProfile, chipload_from_feed, surface_speed_from_rpm,
 };
 use serde::{Deserialize, Serialize};
 
@@ -727,10 +727,12 @@ pub fn compute_engagement_physics(input: &CutPhysicsInput<'_>) -> CutPhysicsMetr
 mod tests {
     use chip_math::{DisplayUnit, approx_eq};
 
+    use chip_machines::{
+        builtin_carvera_air_machine, builtin_carvera_z1_machine, builtin_milo_1_5_machine,
+    };
     use chip_tools::{
         ALUMINUM_6061_T6_ID, ALUMINUM_6063_T5_ID, CoolantMode, ProjectMaterialSelection,
-        SpindleDirection, ToolId, builtin_carvera_air_machine, builtin_carvera_z1_machine,
-        builtin_milo_1_5_machine, resolve_workpiece_material,
+        SpindleDirection, ToolId, resolve_workpiece_material,
     };
 
     use super::*;

@@ -469,8 +469,8 @@ fn cli_reload_step_handles_v1_to_v2_rebind_and_deleted_hole_flagging() {
 
 #[test]
 fn cli_pure2d_inspect_import_bundle_simulate_and_build_work_end_to_end() {
-    use chip_project::build_pure2d_router_panel_demo_project;
-    use chip_sketch::{sample_badge_logo_svg, sample_router_panel_dxf};
+    use chip_demos::build_pure2d_router_panel_demo_project;
+    use chip_fixtures::{sample_badge_logo_svg, sample_router_panel_dxf};
 
     let tmp = TempTestDir::new("pure2d");
     let dxf_path = tmp.path().join("router_panel.dxf");
@@ -571,10 +571,8 @@ fn cli_pure2d_inspect_import_bundle_simulate_and_build_work_end_to_end() {
 
 #[test]
 fn v2_golden_adaptive_rest_and_two_tool_vcarve_snapshots_match_byte_for_byte() {
-    use chip_cad::sample_cam_torture_block_step;
-    use chip_project::{
-        build_adaptive_rest_demo_project, build_vcarve_sign_and_inlay_demo_project,
-    };
+    use chip_demos::{build_adaptive_rest_demo_project, build_vcarve_sign_and_inlay_demo_project};
+    use chip_fixtures::sample_cam_torture_block_step;
 
     let tmp = TempTestDir::new("v2_goldens");
     let starter = default_starter_tool_library();
@@ -681,9 +679,9 @@ fn v2_golden_adaptive_rest_and_two_tool_vcarve_snapshots_match_byte_for_byte() {
 
 #[test]
 fn cli_inspect_import_mesh_validate_and_bundle_roundtrip_for_stl_obj_3mf() {
-    use chip_cad::{
-        MeshUnitKind, sample_box_3mf_bytes, sample_relief_wave_obj_text,
-        sample_sculpted_dome_stl_bytes,
+    use chip_cad::MeshUnitKind;
+    use chip_fixtures::{
+        sample_box_3mf_bytes, sample_relief_wave_obj_text, sample_sculpted_dome_stl_bytes,
     };
 
     let tmp = TempTestDir::new("mesh_m16");
@@ -693,7 +691,7 @@ fn cli_inspect_import_mesh_validate_and_bundle_roundtrip_for_stl_obj_3mf() {
 
     std::fs::write(&stl_path, sample_sculpted_dome_stl_bytes()).unwrap();
     std::fs::write(&obj_path, sample_relief_wave_obj_text()).unwrap();
-    std::fs::write(&mf_path, sample_box_3mf_bytes(MeshUnitKind::Inch, None)).unwrap();
+    std::fs::write(&mf_path, sample_box_3mf_bytes("inch", None)).unwrap();
 
     // 1. Inspect STL, OBJ, and 3MF
     for (p, expected_fmt) in [
@@ -805,13 +803,13 @@ fn cli_inspect_import_mesh_validate_and_bundle_roundtrip_for_stl_obj_3mf() {
 
 #[test]
 fn v3_golden_3axis_mesh_surfacing_snapshots_match_byte_for_byte() {
-    use chip_cad::sample_sculpted_dome_stl_bytes;
     use chip_cam::{
         HeightReference, HeightSpec, MachiningBoundaryMode, Operation, OperationKind,
         ParallelCutDirection, StrategyParams, ToolContainmentMode,
     };
+    use chip_demos::build_sculpted_mesh_dome_project;
+    use chip_fixtures::sample_sculpted_dome_stl_bytes;
     use chip_math::ParamLength;
-    use chip_project::build_sculpted_mesh_dome_project;
 
     let tmp = TempTestDir::new("v3_goldens");
     let starter = default_starter_tool_library();
@@ -931,13 +929,14 @@ fn v3_golden_3axis_mesh_surfacing_snapshots_match_byte_for_byte() {
 
 #[test]
 fn phase_5_v3_rotary_golden_gcode_snapshots_match_exact_expected_output() {
-    use chip_cad::{sample_helical_flute_shaft_stl_bytes, sample_rotary_shaft_stl_bytes};
     use chip_cam::StrategyParams;
-    use chip_math::ParamLength;
-    use chip_project::{
+    use chip_demos::{
         build_rotary_helical_flute_project, build_rotary_shaft_preview_project,
-        build_rotary_wrapped_engraving_project, compute_sha256_hex,
+        build_rotary_wrapped_engraving_project,
     };
+    use chip_fixtures::{sample_helical_flute_shaft_stl_bytes, sample_rotary_shaft_stl_bytes};
+    use chip_math::ParamLength;
+    use chip_project::compute_sha256_hex;
     use chip_tools::default_starter_tool_library;
 
     let tmp = TempTestDir::new("phase5_v3_rotary_goldens");
@@ -1114,7 +1113,8 @@ fn phase_5_v3_rotary_golden_gcode_snapshots_match_exact_expected_output() {
 
 #[test]
 fn cli_transform_model_and_import_mesh_transform_flags_work_end_to_end() {
-    use chip_cad::{ModelTransform, sample_sculpted_dome_stl_bytes};
+    use chip_cad::ModelTransform;
+    use chip_fixtures::sample_sculpted_dome_stl_bytes;
 
     let tmp = TempTestDir::new("transform_model_m35");
     let stl_path = tmp.path().join("dome.stl");
@@ -1770,8 +1770,8 @@ fn cli_workholding_add_vise_clamp_spoilboard_and_list_roundtrip() {
 #[test]
 fn cli_m61_simulate_json_reports_fixture_collision_and_build_blocks_export() {
     use chip_cam::FixtureBody;
+    use chip_demos::build_pure2d_router_panel_demo_project;
     use chip_math::DVec2;
-    use chip_project::build_pure2d_router_panel_demo_project;
 
     let tmp = TempTestDir::new("m61_cli_fixture_gate");
     let tools = chip_tools::default_starter_tool_library().tools;
@@ -2089,10 +2089,9 @@ fn cli_simulate_all_setups_carryover_emits_cumulative_json_and_text_reports() {
 #[test]
 fn cli_workholding_flip_jig_and_soft_jaws_wizards_end_to_end() {
     use chip_cad::{MeshImportOptions, load_mesh_bytes};
-    use chip_project::{
-        build_two_sided_vise_workholding_project, compute_sha256_hex,
-        sample_two_sided_vise_part_stl_bytes,
-    };
+    use chip_demos::build_two_sided_vise_workholding_project;
+    use chip_fixtures::sample_two_sided_vise_part_stl_bytes;
+    use chip_project::compute_sha256_hex;
     use chip_tools::default_starter_tool_library;
 
     let tmp = TempTestDir::new("workholding_wizards_m63");
@@ -2453,7 +2452,7 @@ fn cli_m94_validate_physics_strict_physics_and_json_report() {
     let tmp = TempTestDir::new("m94_validate_physics");
     let proj_path = tmp.path().join("bartrim_face.chip.toml");
 
-    let air = chip_tools::builtin_carvera_air_machine();
+    let air = chip_machines::builtin_carvera_air_machine();
     let t2 = air
         .tools
         .iter()

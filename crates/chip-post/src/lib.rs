@@ -6,10 +6,11 @@ pub mod emitter;
 mod modal;
 pub mod partition;
 pub mod profile;
+pub mod rotary;
 
 pub use emitter::post_process_setup;
 pub use partition::{
-    OperationPostInput, PostOutputFile, SetupPostInput, describe_wcs_origin,
+    OperationPostInput, PostOutputFile, PostRotarySetup, PostStockSummary, SetupPostInput,
     sanitize_file_extension, validate_safe_output_filename,
 };
 pub use profile::{
@@ -23,27 +24,31 @@ pub use profile::{
     resolve_post_profile, resolve_post_profile_cli_override, sanitize_post_id,
     save_user_post_profile, save_user_post_profile_in, user_post_profiles_dir, validate_post_id,
 };
+pub use rotary::{
+    compute_inverse_time_feed_g93, compute_rotary_angular_feed_deg_min,
+    compute_workpiece_arc_distance_mm, resolve_rotary_target_deg,
+};
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use chip_cam::{
-        ClEvent, CutterCompMode, DrillCycleKind, DrillCycleSpec, MotionRole, Operation,
-        OperationKind, ResolvedStockGeometry, ToolpathBuilder, WorkOffsetSlot, XyArcMove,
+    use chip_cl::{
+        ClEvent, CutterCompMode, DrillCycleKind, DrillCycleSpec, GeneratedToolpath, MotionRole,
+        RotaryUnwindMode, ToolpathBuilder, WorkOffsetSlot, XyArcMove,
     };
-    use chip_math::{Aabb3, DVec2, DVec3};
+    use chip_math::{DVec2, DVec3};
     use chip_tools::{CoolantMode, SpindleDirection, default_starter_tool_library};
 
     use super::*;
 
     fn build_synthetic_multi_tool_job() -> (
         chip_tools::ToolLibrary,
-        Operation,
-        chip_cam::GeneratedToolpath,
-        Operation,
-        chip_cam::GeneratedToolpath,
-        Operation,
-        chip_cam::GeneratedToolpath,
+        String,
+        GeneratedToolpath,
+        String,
+        GeneratedToolpath,
+        String,
+        GeneratedToolpath,
     ) {
         let lib = default_starter_tool_library();
         let t_face = &lib.tools[6]; // T7
@@ -51,16 +56,11 @@ mod tests {
         let t_drill = &lib.tools[5]; // T6
 
         // Op 1: Facing with T7 (includes nested parens in comment to test sanitization + <=80 char clamp!)
-        let mut op1 = Operation::new(
-            "op_1",
-            "Face Top (Rough & Finish Decking Pass With Extra Long Descriptive Title For 80-Char GRBL Limit Check)",
-            OperationKind::Facing,
-        );
-        op1.tool_id = Some(t_face.id.clone());
+        let op1_name = "Face Top (Rough & Finish Decking Pass With Extra Long Descriptive Title For 80-Char GRBL Limit Check)".to_string();
         let mut b1 = ToolpathBuilder::new("op_1");
         b1.push_event(ClEvent::OperationStart {
-            op_id: op1.id.clone(),
-            op_name: op1.name.clone(),
+            op_id: "op_1".to_string(),
+            op_name: op1_name.clone(),
             strategy_name: "Facing".to_string(),
             est_time_sec: 12.0,
         });
@@ -87,12 +87,11 @@ mod tests {
         let tp1 = b1.finish();
 
         // Op 2: Helical 360° Bore + Wear Comp with T1
-        let mut op2 = Operation::new("op_2", "Ø18mm Helical Bore", OperationKind::DrillBore);
-        op2.tool_id = Some(t_flat.id.clone());
+        let op2_name = "Ø18mm Helical Bore".to_string();
         let mut b2 = ToolpathBuilder::new("op_2");
         b2.push_event(ClEvent::OperationStart {
-            op_id: op2.id.clone(),
-            op_name: op2.name.clone(),
+            op_id: "op_2".to_string(),
+            op_name: op2_name.clone(),
             strategy_name: "Helical Bore".to_string(),
             est_time_sec: 28.0,
         });
@@ -131,12 +130,11 @@ mod tests {
         let tp2 = b2.finish();
 
         // Op 3: Deep Peck Drill Cycle with T6
-        let mut op3 = Operation::new("op_3", "4x Peck Holes", OperationKind::DrillBore);
-        op3.tool_id = Some(t_drill.id.clone());
+        let op3_name = "4x Peck Holes".to_string();
         let mut b3 = ToolpathBuilder::new("op_3");
         b3.push_event(ClEvent::OperationStart {
-            op_id: op3.id.clone(),
-            op_name: op3.name.clone(),
+            op_id: "op_3".to_string(),
+            op_name: op3_name.clone(),
             strategy_name: "Deep Peck Drill".to_string(),
             est_time_sec: 18.0,
         });
@@ -169,7 +167,7 @@ mod tests {
         b3.push_event(ClEvent::OperationEnd);
         let tp3 = b3.finish();
 
-        (lib, op1, tp1, op2, tp2, op3, tp3)
+        (lib, op1_name, tp1, op2_name, tp2, op3_name, tp3)
     }
 
     #[test]
@@ -182,25 +180,25 @@ mod tests {
             setup_name: "Setup 1 - Top Op",
             wcs_slot: WorkOffsetSlot::G54,
             wcs_origin_description: "Stock Top Front-Left".to_string(),
-            stock: ResolvedStockGeometry::Box {
-                aabb_wcs: Aabb3::new(DVec3::new(0.0, 0.0, -15.0), DVec3::new(104.0, 84.0, 0.0)),
+            stock: PostStockSummary::Box {
+                size_mm: DVec3::new(104.0, 84.0, 15.0),
             },
             rotary: None,
             clearance_z_wcs: 25.0,
             retract_z_wcs: 15.0,
             operations: vec![
                 OperationPostInput {
-                    op: &op1,
+                    op_name: &op1,
                     tool: &lib.tools[6],
                     toolpath: &tp1,
                 },
                 OperationPostInput {
-                    op: &op2,
+                    op_name: &op2,
                     tool: &lib.tools[0],
                     toolpath: &tp2,
                 },
                 OperationPostInput {
-                    op: &op3,
+                    op_name: &op3,
                     tool: &lib.tools[5],
                     toolpath: &tp3,
                 },
@@ -295,25 +293,25 @@ mod tests {
             setup_name: "Setup 1",
             wcs_slot: WorkOffsetSlot::G59_1,
             wcs_origin_description: "Model Top Center".to_string(),
-            stock: ResolvedStockGeometry::Box {
-                aabb_wcs: Aabb3::new(DVec3::new(0.0, 0.0, -25.4), DVec3::new(50.8, 25.4, 0.0)),
+            stock: PostStockSummary::Box {
+                size_mm: DVec3::new(50.8, 25.4, 25.4),
             },
             rotary: None,
             clearance_z_wcs: 25.4,
             retract_z_wcs: 12.7,
             operations: vec![
                 OperationPostInput {
-                    op: &op1,
+                    op_name: &op1,
                     tool: &lib.tools[6],
                     toolpath: &tp1,
                 },
                 OperationPostInput {
-                    op: &op2,
+                    op_name: &op2,
                     tool: &lib.tools[0],
                     toolpath: &tp2,
                 },
                 OperationPostInput {
-                    op: &op3,
+                    op_name: &op3,
                     tool: &lib.tools[5],
                     toolpath: &tp3,
                 },
@@ -353,20 +351,14 @@ mod tests {
 
     #[test]
     fn four_axis_posts_emit_g93_inverse_time_g94_restore_and_swapped_axis_wrapping() {
-        use chip_cam::{
-            ResolvedRotaryConfig, RotaryAxisKind, RotaryDirection, RotaryDriveMode,
-            RotaryUnwindMode, StockAxis,
-        };
-
         let lib = default_starter_tool_library();
         let t1 = &lib.tools[0];
-        let mut op = Operation::new("op_rot_1", "Rotary Spiral Test", OperationKind::Facing);
-        op.tool_id = Some(t1.id.clone());
+        let op_name = "Rotary Spiral Test";
 
         let mut b = ToolpathBuilder::new("op_rot_1");
         b.push_event(ClEvent::OperationStart {
-            op_id: op.id.clone(),
-            op_name: op.name.clone(),
+            op_id: "op_rot_1".to_string(),
+            op_name: op_name.to_string(),
             strategy_name: "Rotary Test".to_string(),
             est_time_sec: 10.0,
         });
@@ -397,20 +389,12 @@ mod tests {
         b.push_event(ClEvent::OperationEnd);
         let tp = b.finish();
 
-        let rotary_x = ResolvedRotaryConfig {
-            mode: RotaryDriveMode::Simultaneous4Axis,
-            axis: RotaryAxisKind::XAxis,
-            direction: RotaryDirection::RightHandCcw,
+        let rotary_x = PostRotarySetup {
             axis_letter: 'A',
-            center_wcs: DVec3::ZERO,
-            stock_u_min: -40.0,
-            stock_u_max: 40.0,
+            axis_label: "X Axis (A-Axis)",
+            mode_label: "Simultaneous 4-Axis (X+Y+Z+R)",
             stock_outer_radius_mm: 22.0,
             clearance_radius_mm: 32.0,
-            chuck_end_positive: false,
-            chuck_u_min: -60.0,
-            chuck_u_max: -40.0,
-            chuck_radius_mm: 32.5,
             unwind_mode: RotaryUnwindMode::ContinuousMultiTurn,
         };
 
@@ -419,22 +403,16 @@ mod tests {
             setup_name: "Setup 1 - A-Axis",
             wcs_slot: WorkOffsetSlot::G54,
             wcs_origin_description: "Stock Center".to_string(),
-            stock: ResolvedStockGeometry::Cylinder {
-                axis: StockAxis::X,
-                center_wcs: DVec3::ZERO,
-                radius_mm: 22.0,
-                min_axial_mm: -40.0,
-                max_axial_mm: 40.0,
-                aabb_wcs: Aabb3::new(
-                    DVec3::new(-40.0, -22.0, -22.0),
-                    DVec3::new(40.0, 22.0, 22.0),
-                ),
+            stock: PostStockSummary::Cylinder {
+                axis_label: 'X',
+                diameter_mm: 44.0,
+                length_mm: 80.0,
             },
             rotary: Some(rotary_x),
             clearance_z_wcs: 35.0,
             retract_z_wcs: 32.0,
             operations: vec![OperationPostInput {
-                op: &op,
+                op_name,
                 tool: t1,
                 toolpath: &tp,
             }],
@@ -517,8 +495,7 @@ mod tests {
     fn quadrant_arc_with_one_ulp_overshoot_does_not_spuriously_split() {
         let lib = default_starter_tool_library();
         let t1 = &lib.tools[0];
-        let mut op = Operation::new("op_arc", "Arc Boundary Test", OperationKind::Contour2D);
-        op.tool_id = Some(t1.id.clone());
+        let op_name = "Arc Boundary Test";
         let grbl = resolve_post_profile("grbl", None).unwrap();
 
         let count_arc_lines = |angle_deg: f64| -> usize {
@@ -528,8 +505,8 @@ mod tests {
             let end = DVec3::new(r * theta.cos(), r * theta.sin(), -2.0);
             let mut b = ToolpathBuilder::new("op_arc");
             b.push_event(ClEvent::OperationStart {
-                op_id: op.id.clone(),
-                op_name: op.name.clone(),
+                op_id: "op_arc".to_string(),
+                op_name: op_name.to_string(),
                 strategy_name: "2D Contour".to_string(),
                 est_time_sec: 1.0,
             });
@@ -565,17 +542,14 @@ mod tests {
                 setup_name: "Setup 1",
                 wcs_slot: WorkOffsetSlot::G54,
                 wcs_origin_description: "Stock Top Center".to_string(),
-                stock: ResolvedStockGeometry::Box {
-                    aabb_wcs: Aabb3::new(
-                        DVec3::new(-20.0, -20.0, -10.0),
-                        DVec3::new(20.0, 20.0, 0.0),
-                    ),
+                stock: PostStockSummary::Box {
+                    size_mm: DVec3::new(40.0, 40.0, 10.0),
                 },
                 rotary: None,
                 clearance_z_wcs: 10.0,
                 retract_z_wcs: 5.0,
                 operations: vec![OperationPostInput {
-                    op: &op,
+                    op_name,
                     tool: t1,
                     toolpath: &tp,
                 }],
@@ -655,16 +629,11 @@ mod tests {
         let lib = default_starter_tool_library();
         let mut t1 = lib.tools[0].clone();
         t1.name = "Flat)\nG0 Z-50\n(Endmill".to_string();
-        let mut op = Operation::new(
-            "op_inj",
-            "Pocket)\nM3 S99999\n(Pass",
-            OperationKind::Pocket2D,
-        );
-        op.tool_id = Some(t1.id.clone());
+        let op_name = "Pocket)\nM3 S99999\n(Pass";
         let mut b = ToolpathBuilder::new("op_inj");
         b.push_event(ClEvent::OperationStart {
-            op_id: op.id.clone(),
-            op_name: op.name.clone(),
+            op_id: "op_inj".to_string(),
+            op_name: op_name.to_string(),
             strategy_name: "Pocket)\nG0 X-999".to_string(),
             est_time_sec: 1.0,
         });
@@ -689,14 +658,14 @@ mod tests {
             setup_name: "Setup 1",
             wcs_slot: WorkOffsetSlot::G54,
             wcs_origin_description: "Top".to_string(),
-            stock: ResolvedStockGeometry::Box {
-                aabb_wcs: Aabb3::new(DVec3::new(0.0, 0.0, -10.0), DVec3::new(50.0, 50.0, 0.0)),
+            stock: PostStockSummary::Box {
+                size_mm: DVec3::new(50.0, 50.0, 10.0),
             },
             rotary: None,
             clearance_z_wcs: 10.0,
             retract_z_wcs: 5.0,
             operations: vec![OperationPostInput {
-                op: &op,
+                op_name,
                 tool: &t1,
                 toolpath: &tp,
             }],
@@ -721,7 +690,7 @@ mod tests {
         let tp_nan = b_nan.finish();
         let nan_input = SetupPostInput {
             operations: vec![OperationPostInput {
-                op: &op,
+                op_name,
                 tool: &t1,
                 toolpath: &tp_nan,
             }],
@@ -738,23 +707,17 @@ mod tests {
     fn milestone_45_thread_mill_helical_arcs_emit_cleanly_for_grbl_grblhal_atc_and_linuxcnc() {
         let lib = default_starter_tool_library();
         let tm_475 = &lib.tools[8]; // T9: Ø4.75mm single-point 60° thread mill
-        let stock_aabb = Aabb3::new(DVec3::new(0.0, 0.0, -20.0), DVec3::new(100.0, 100.0, 0.0));
         let cx = 30.0_f64;
         let cy = 40.0_f64;
         let pitch = 1.25_f64;
 
         // Op 1: Internal M8 x 1.25 RH Climb -> Bottom-Up CCW (`G3`, `+Z` by `pitch` per 360°)
-        let mut op_int = Operation::new(
-            "op_tm_int",
-            "M8x1.25 Internal Thread",
-            OperationKind::ThreadMill,
-        );
-        op_int.tool_id = Some(tm_475.id.clone());
+        let op_int_name = "M8x1.25 Internal Thread";
         let r_int = 0.5 * (8.0 - 4.75); // 1.625 mm
         let mut b_int = ToolpathBuilder::new("op_tm_int");
         b_int.push_event(ClEvent::OperationStart {
-            op_id: op_int.id.clone(),
-            op_name: op_int.name.clone(),
+            op_id: "op_tm_int".to_string(),
+            op_name: op_int_name.to_string(),
             strategy_name: "Thread Mill".to_string(),
             est_time_sec: 15.0,
         });
@@ -818,17 +781,12 @@ mod tests {
         let tp_int = b_int.finish();
 
         // Op 2: External M8 x 1.25 RH Climb -> Top-Down CW (`G2`, `-Z` by `pitch` per 360°)
-        let mut op_ext = Operation::new(
-            "op_tm_ext",
-            "M8x1.25 External Thread",
-            OperationKind::ThreadMill,
-        );
-        op_ext.tool_id = Some(tm_475.id.clone());
+        let op_ext_name = "M8x1.25 External Thread";
         let r_ext = 0.5 * (6.466 + 4.75); // 5.608 mm
         let mut b_ext = ToolpathBuilder::new("op_tm_ext");
         b_ext.push_event(ClEvent::OperationStart {
-            op_id: op_ext.id.clone(),
-            op_name: op_ext.name.clone(),
+            op_id: "op_tm_ext".to_string(),
+            op_name: op_ext_name.to_string(),
             strategy_name: "Thread Mill".to_string(),
             est_time_sec: 15.0,
         });
@@ -875,20 +833,20 @@ mod tests {
             setup_name: "Setup 1 - Threads",
             wcs_slot: WorkOffsetSlot::G54,
             wcs_origin_description: "Stock Top Front-Left".to_string(),
-            stock: ResolvedStockGeometry::Box {
-                aabb_wcs: stock_aabb,
+            stock: PostStockSummary::Box {
+                size_mm: DVec3::new(100.0, 100.0, 20.0),
             },
             rotary: None,
             clearance_z_wcs: 15.0,
             retract_z_wcs: 5.0,
             operations: vec![
                 OperationPostInput {
-                    op: &op_int,
+                    op_name: op_int_name,
                     tool: tm_475,
                     toolpath: &tp_int,
                 },
                 OperationPostInput {
-                    op: &op_ext,
+                    op_name: op_ext_name,
                     tool: tm_475,
                     toolpath: &tp_ext,
                 },

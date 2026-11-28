@@ -13,10 +13,7 @@ use wgpu::util::DeviceExt as _;
 
 use crate::{
     backend::StockCheckpointSnapshot,
-    mesher_common::op_color,
-    metrics::{
-        SimStockColorMode, deviation_to_heatmap_rgba, signed_deviation_at_machined_endpoint,
-    },
+    metrics::signed_deviation_at_machined_endpoint,
     tridexel::{
         DexelSpan, FlatDexelSpan, INLINE_DEXEL_SLOTS, TriDexelStock,
         sweep::{
@@ -25,18 +22,16 @@ use crate::{
         },
     },
     types::{
-        Axis3, BatchSweepOutput, RotaryStockSpec, SimColoredVertex, SimMeshOptions, SimStockMesh,
+        Axis3, BatchSweepOutput, RotaryStockSpec, SimColoredVertex, SimStockMesh,
         SpanRuleViolations, StockVerifyTolerances, SweepChord, SweepToolSpec,
     },
+    visual::{SimStockColorMode, deviation_to_heatmap_rgba, op_color},
 };
 
 use super::{
     checkpoints::GpuCheckpointBuffers,
     context::{GpuSimContext, GrowableStorageBuffer},
-    render_handle::{
-        GpuStockRenderHandle, GpuTriDexelRenderData, TRIDEXEL_PACKED_QUAD_BYTES,
-        TriDexelEmitUniforms, compute_tridexel_max_quads,
-    },
+    snapshot::{GpuStockBufferSnapshot, GpuTriDexelBuffers, TriDexelOverflowData},
     types::{
         CHORD_CARDINAL_MASK, CHORD_CARDINAL_SHIFT, CHORD_FLAG_CHECK_HOLDER,
         CHORD_FLAG_ORIENTED_POSE, CHORD_FLAG_RAPID, CHORD_FLAG_VERIFY, GPU_TILE_SIZE,
@@ -89,9 +84,6 @@ struct GpuPlaneDispatch {
 struct TriDexelRenderSnapSlot {
     m_slots: Arc<wgpu::Buffer>,
     m_counts: Arc<wgpu::Buffer>,
-    quad_buf: Arc<wgpu::Buffer>,
-    indirect_args_buf: Arc<wgpu::Buffer>,
-    emit_uniform_buf: Arc<wgpu::Buffer>,
 }
 
 /// GPU-resident 3-axis orthogonal Tri-Dexel stock storing all 3 planes in contiguous flat `slots`
@@ -545,93 +537,42 @@ impl GpuTriDexelState {
         guard.target = Some(target_stock);
     }
 
-    /// Snapshots `m_slots` & `m_counts` into a pooled immutable GPU buffer set, dispatches
-    /// `tridexel_emit.wgsl` into a reusable compact GPU quad buffer + `DrawIndirectArgs` buffer,
-    /// and returns a read-only [`GpuStockRenderHandle::TriDexel`] (zero CPU-to-GPU upload for
-    /// inline rays; optional tiny CPU supplement mesh ONLY when rare overflow rays exist).
-    pub(crate) fn capture_render_handle(
-        &mut self,
-        color_mode: SimStockColorMode,
-    ) -> Arc<GpuStockRenderHandle> {
-        self.capture_render_handle_with_options(SimMeshOptions::from(color_mode))
-    }
-
-    /// Snapshots `m_slots` & `m_counts` into a pooled immutable GPU buffer set and dispatches
-    /// `tridexel_emit.wgsl` with visual [`SimMeshOptions`] (`color_mode` + `mesh_skinning`).
-    pub(crate) fn capture_render_handle_with_options(
-        &mut self,
-        options: SimMeshOptions,
-    ) -> Arc<GpuStockRenderHandle> {
-        let color_mode = options.color_mode;
+    /// Snapshots `m_slots` & `m_counts` into a pooled immutable GPU buffer set and returns a
+    /// read-only [`GpuStockBufferSnapshot::TriDexel`] (zero CPU-to-GPU upload and zero surface
+    /// extraction shaders).
+    pub(crate) fn capture_buffer_snapshot(&mut self) -> Arc<GpuStockBufferSnapshot> {
         let total_slots = self.total_rays * INLINE_DEXEL_SLOTS;
         let slots_bytes = (total_slots * std::mem::size_of::<FlatDexelSpan>()) as u64;
         let counts_bytes = (self.total_rays * std::mem::size_of::<u32>()) as u64;
-        let max_quads = compute_tridexel_max_quads(self.ctx.device(), self.total_rays);
-        let quad_bytes = (max_quads as u64) * (TRIDEXEL_PACKED_QUAD_BYTES as u64);
 
-        let slot = if let Some(existing) = self.render_snap_pool.iter().find(|s| {
-            Arc::strong_count(&s.m_slots) == 1
-                && Arc::strong_count(&s.m_counts) == 1
-                && Arc::strong_count(&s.quad_buf) == 1
-                && Arc::strong_count(&s.indirect_args_buf) == 1
-                && Arc::strong_count(&s.emit_uniform_buf) == 1
-        }) {
+        let (m_slots, m_counts) = if let Some(existing) = self
+            .render_snap_pool
+            .iter()
+            .find(|s| Arc::strong_count(&s.m_slots) == 1 && Arc::strong_count(&s.m_counts) == 1)
+        {
             (
                 Arc::clone(&existing.m_slots),
                 Arc::clone(&existing.m_counts),
-                Arc::clone(&existing.quad_buf),
-                Arc::clone(&existing.indirect_args_buf),
-                Arc::clone(&existing.emit_uniform_buf),
             )
         } else {
             let device = self.ctx.device();
             let m_slots = Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("chip_td_render_snap_slots"),
+                label: Some("chip_td_snap_slots"),
                 size: slots_bytes.max(16),
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }));
             let m_counts = Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("chip_td_render_snap_counts"),
+                label: Some("chip_td_snap_counts"),
                 size: counts_bytes.max(16),
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }));
-            let quad_buf = Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("chip_td_emit_quads"),
-                size: quad_bytes.max(64),
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-                mapped_at_creation: false,
-            }));
-            let indirect_args_buf = Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("chip_td_emit_indirect_args"),
-                size: 16,
-                usage: wgpu::BufferUsages::INDIRECT
-                    | wgpu::BufferUsages::STORAGE
-                    | wgpu::BufferUsages::COPY_DST
-                    | wgpu::BufferUsages::COPY_SRC,
-                mapped_at_creation: false,
-            }));
-            let emit_uniform_buf = Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("chip_td_emit_uniforms"),
-                size: std::mem::size_of::<TriDexelEmitUniforms>() as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }));
             self.render_snap_pool.push(TriDexelRenderSnapSlot {
                 m_slots: Arc::clone(&m_slots),
                 m_counts: Arc::clone(&m_counts),
-                quad_buf: Arc::clone(&quad_buf),
-                indirect_args_buf: Arc::clone(&indirect_args_buf),
-                emit_uniform_buf: Arc::clone(&emit_uniform_buf),
             });
-            (
-                m_slots,
-                m_counts,
-                quad_buf,
-                indirect_args_buf,
-                emit_uniform_buf,
-            )
+            (m_slots, m_counts)
         };
 
         if slots_bytes > 0 && counts_bytes > 0 {
@@ -639,60 +580,53 @@ impl GpuTriDexelState {
                 self.ctx
                     .device()
                     .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                        label: Some("chip_td_render_snap_copy"),
+                        label: Some("chip_td_snap_copy"),
                     });
-            encoder.copy_buffer_to_buffer(&self.m_slots_buf, 0, &slot.0, 0, slots_bytes);
-            encoder.copy_buffer_to_buffer(&self.m_counts_buf, 0, &slot.1, 0, counts_bytes);
+            encoder.copy_buffer_to_buffer(&self.m_slots_buf, 0, &m_slots, 0, slots_bytes);
+            encoder.copy_buffer_to_buffer(&self.m_counts_buf, 0, &m_counts, 0, counts_bytes);
             self.ctx.queue().submit(std::iter::once(encoder.finish()));
         }
 
-        let overflow_mesh = self.build_overflow_supplement_mesh(color_mode);
+        let overflow_data = {
+            let guard = self.cpu.lock().unwrap_or_else(|e| e.into_inner());
+            let has_overflow = guard.stock.planes.iter().any(|p| !p.overflow.is_empty());
+            has_overflow.then(|| {
+                Arc::new(TriDexelOverflowData {
+                    stock: guard.stock.clone(),
+                    target: guard.target.clone(),
+                })
+            })
+        };
 
-        let data = GpuTriDexelRenderData::new_and_emit(
-            Arc::clone(&self.ctx),
-            [
+        Arc::new(GpuStockBufferSnapshot::TriDexel(GpuTriDexelBuffers {
+            dims: [
                 self.dims[0] as u32,
                 self.dims[1] as u32,
                 self.dims[2] as u32,
             ],
-            [
+            origin_wcs: [
                 self.origin_wcs.x as f32,
                 self.origin_wcs.y as f32,
                 self.origin_wcs.z as f32,
             ],
-            [
+            pitch_mm: [
                 self.pitch_mm.x as f32,
                 self.pitch_mm.y as f32,
                 self.pitch_mm.z as f32,
             ],
-            [
+            plane_ray_offsets: [
                 self.plane_ray_offsets[0] as u32,
                 self.plane_ray_offsets[1] as u32,
                 self.plane_ray_offsets[2] as u32,
             ],
-            self.total_rays as u32,
-            self.has_target,
-            slot.0,
-            slot.1,
-            Arc::clone(&self.t_slots_buf),
-            Arc::clone(&self.t_counts_buf),
-            slot.2,
-            slot.3,
-            slot.4,
-            max_quads,
-            overflow_mesh,
-            options,
-        );
-
-        Arc::new(GpuStockRenderHandle::TriDexel(data))
-    }
-
-    fn build_overflow_supplement_mesh(
-        &self,
-        color_mode: SimStockColorMode,
-    ) -> Option<Arc<SimStockMesh>> {
-        let guard = self.cpu.lock().unwrap_or_else(|e| e.into_inner());
-        build_tridexel_overflow_supplement_mesh(&guard.stock, guard.target.as_ref(), color_mode)
+            total_rays: self.total_rays as u32,
+            has_target: self.has_target,
+            m_slots_buf: m_slots,
+            m_counts_buf: m_counts,
+            t_slots_buf: Arc::clone(&self.t_slots_buf),
+            t_counts_buf: Arc::clone(&self.t_counts_buf),
+            overflow_data,
+        }))
     }
 
     pub(crate) fn checkpoint_byte_size(&self) -> usize {
@@ -1670,7 +1604,7 @@ impl GpuTriDexelState {
     }
 }
 
-pub(super) fn build_tridexel_overflow_supplement_mesh(
+pub fn build_tridexel_overflow_supplement_mesh(
     stock: &TriDexelStock,
     target: Option<&TriDexelStock>,
     color_mode: SimStockColorMode,

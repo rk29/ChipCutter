@@ -1037,10 +1037,10 @@ pub fn highest_adjacent_lower_floor_proj(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use chip_cad::{
-        CadKernel, MonstertruckKernel, SurfaceKind, sample_cam_torture_block_step,
-        sample_multi_feature_bracket_step, sample_threaded_manifold_step,
-        tutorial_chamfer_engrave_block_step,
+    use chip_cad::{CadKernel, MonstertruckKernel, SurfaceKind};
+    use chip_fixtures::{
+        sample_cam_torture_block_step, sample_multi_feature_bracket_step,
+        sample_threaded_manifold_step, tutorial_chamfer_engrave_block_step,
     };
     use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DVec3, approx_eq};
 

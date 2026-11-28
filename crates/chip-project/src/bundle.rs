@@ -5,8 +5,8 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use chip_machines::{is_builtin_machine_id, resolve_machine_definition};
 use chip_post::{PostProfile, builtin_post_profiles, resolve_post_profile};
-use chip_tools::{is_builtin_machine_id, resolve_machine_definition};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use zip::{CompressionMethod, DateTime, System, ZipArchive, ZipWriter, write::SimpleFileOptions};

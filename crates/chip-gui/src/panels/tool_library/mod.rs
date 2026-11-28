@@ -1,13 +1,13 @@
 mod geometry_editor;
 mod presets_editor;
 
+use chip_machines::MachineDefinition;
 use chip_math::DisplayUnit;
 use chip_project::{ProjectDocument, UndoHistory};
 use chip_tools::{
-    CoolantMode, CutterGeometry, CuttingPreset, MachineDefinition, SpindleDirection,
-    SurfaceSpeedPresetSpec, Tool, ToolId, ToolLibrary, default_global_tool_library_path,
-    import_fusion_library_path, starter_dovetail_60deg_12mm, starter_lollipop_6mm,
-    starter_tslot_12mm,
+    CoolantMode, CutterGeometry, CuttingPreset, SpindleDirection, SurfaceSpeedPresetSpec, Tool,
+    ToolId, ToolLibrary, default_global_tool_library_path, import_fusion_library_path,
+    starter_dovetail_60deg_12mm, starter_lollipop_6mm, starter_tslot_12mm,
 };
 
 use crate::widgets::{grid_row, inspector_grid, section_card};
@@ -1377,7 +1377,7 @@ mod tests {
     #[allow(clippy::unwrap_used, clippy::expect_used)]
     fn m87_tool_metadata_crud_and_presets_editor_regression() {
         use chip_cam::{Operation, OperationKind};
-        use chip_tools::builtin_machine_definitions;
+        use chip_machines::builtin_machine_definitions;
 
         let ctx = egui::Context::default();
         let mut global_lib = default_starter_tool_library();

@@ -17,7 +17,8 @@ chip-bvh.workspace = true
 chip-geom2d.workspace = true
 chip-cad.workspace = true
 chip-sketch.workspace = true
-chip-tools.workspace = true
+chip-tools = { workspace = true, features = ["user-config"] }
+chip-machines.workspace = true
 chip-cam.workspace = true
 chip-sim.workspace = true
 chip-post.workspace = true
@@ -28,3 +29,7 @@ sha2.workspace = true
 thiserror.workspace = true
 rayon.workspace = true
 crossbeam-channel.workspace = true
+
+[dev-dependencies]
+chip-demos.workspace = true
+chip-fixtures.workspace = true

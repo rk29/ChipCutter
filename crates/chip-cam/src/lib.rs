@@ -3,7 +3,7 @@
 
 pub mod avoid_regions;
 pub mod boundary_preview;
-pub mod cl_data;
+pub use chip_cl::cl_data;
 pub mod feed_opt;
 pub mod fixture_avoidance;
 pub mod heights;
@@ -20,7 +20,7 @@ pub mod setup;
 pub mod stock;
 pub mod strategies;
 pub mod surface3d;
-pub mod toolpath;
+pub use chip_cl::toolpath;
 pub mod validation;
 pub mod wcs;
 pub mod workholding;
@@ -94,10 +94,8 @@ pub use rotary::{
     OperationRotaryMode, ROTARY_CHUCK_GUARD_CLEARANCE_MM, ResolvedRotaryConfig,
     ResolvedRotaryWindow, RotaryAxisKind, RotaryConfig, RotaryDirection, RotaryDriveMode,
     RotaryUnwindMode, RotaryWindowInput, build_indexed_virtual_setup,
-    compute_index_angle_for_normal, compute_inverse_time_feed_g93,
-    compute_rotary_angular_feed_deg_min, compute_stock_rotary_envelope,
-    compute_workpiece_arc_distance_mm, cylindrical_to_wcs, project_selections_onto_rotary_axis,
-    resolve_rotary_target_deg, resolve_rotary_window, rotary_chuck_guard_u,
+    compute_index_angle_for_normal, compute_stock_rotary_envelope, cylindrical_to_wcs,
+    project_selections_onto_rotary_axis, resolve_rotary_window, rotary_chuck_guard_u,
     rotate_point_about_axis, validate_toolpath_rotary_chuck_clearance, wcs_to_cylindrical,
 };
 pub use selection::{
@@ -152,7 +150,7 @@ pub use validation::{
 };
 pub use wcs::{
     AxisAnchor, BoxAnchor27, CamError, WcsAxisRef, WcsConfig, WcsFeaturePointRef,
-    WcsOrientationMode, WcsOriginMode, WorkOffsetSlot,
+    WcsOrientationMode, WcsOriginMode, WorkOffsetSlot, describe_wcs_origin,
 };
 pub use workholding::{
     FixtureBody, FixtureKind, FixtureZRef, ResolvedFixtureSolid, ViseClampAxis, ViseFixedSide,
@@ -162,10 +160,8 @@ pub use workholding::{
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use chip_cad::{
-        CadKernel, MonstertruckKernel, SurfaceKind, find_same_diameter_holes,
-        sample_multi_feature_bracket_step,
-    };
+    use chip_cad::{CadKernel, MonstertruckKernel, SurfaceKind, find_same_diameter_holes};
+    use chip_fixtures::sample_multi_feature_bracket_step;
     use chip_math::{ArcSegment2D, DEFAULT_TESS_CHORD_TOL_MM, DisplayUnit, ParamLength, approx_eq};
 
     use super::*;

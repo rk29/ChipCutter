@@ -2,16 +2,20 @@
 resolver = "2"
 members = [
     "crates/chip-math",
+    "crates/chip-fixtures",
     "crates/chip-bvh",
     "crates/chip-geom2d",
     "crates/chip-cad",
     "crates/chip-sketch",
     "crates/chip-tools",
+    "crates/chip-machines",
+    "crates/chip-cl",
     "crates/chip-stock",
     "crates/chip-cam",
     "crates/chip-sim",
     "crates/chip-post",
     "crates/chip-project",
+    "crates/chip-demos",
     "crates/chip-cli",
     "crates/chip-gui",
 ]
@@ -37,16 +41,20 @@ expect_used = "deny"
 
 [workspace.dependencies]
 chip-math = { version = "0.26.0", path = "crates/chip-math" }
+chip-fixtures = { version = "0.26.0", path = "crates/chip-fixtures" }
 chip-bvh = { version = "0.26.0", path = "crates/chip-bvh" }
 chip-geom2d = { version = "0.26.0", path = "crates/chip-geom2d" }
 chip-cad = { version = "0.26.0", path = "crates/chip-cad" }
 chip-sketch = { version = "0.26.0", path = "crates/chip-sketch" }
 chip-tools = { version = "0.26.0", path = "crates/chip-tools" }
+chip-machines = { version = "0.26.0", path = "crates/chip-machines" }
+chip-cl = { version = "0.26.0", path = "crates/chip-cl" }
 chip-stock = { version = "0.26.0", path = "crates/chip-stock" }
 chip-cam = { version = "0.26.0", path = "crates/chip-cam" }
 chip-sim = { version = "0.26.0", path = "crates/chip-sim" }
 chip-post = { version = "0.26.0", path = "crates/chip-post" }
 chip-project = { version = "0.26.0", path = "crates/chip-project" }
+chip-demos = { version = "0.26.0", path = "crates/chip-demos" }
 
 glam = { version = "0.29", features = ["serde", "bytemuck"] }
 bytemuck = { version = "1.21", features = ["derive"] }

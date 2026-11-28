@@ -2,16 +2,14 @@
 
 use std::sync::atomic::AtomicBool;
 
-use chip_cad::{
-    MeshImportOptions, load_mesh_cad_document, sample_relief_wave_obj_text,
-    sample_sculpted_dome_stl_bytes,
-};
+use chip_cad::{MeshImportOptions, load_mesh_cad_document};
 use chip_cam::{
     BoxAnchor27, HeightReference, HeightSpec, MachiningBoundaryMode, MotionRole, Operation,
     OperationGenRequest, OperationKind, ParallelCutDirection, RestMachiningConfig,
     RestMachiningMode, SegmentMotion3D, Setup, StockConfig, StrategyParams, ToolContainmentMode,
     WaterlineOrderMode, WcsOriginMode, WorkOffsetSlot, generate_operation_toolpath_with_rest,
 };
+use chip_fixtures::{sample_relief_wave_obj_text, sample_sculpted_dome_stl_bytes};
 use chip_math::{DVec3, DisplayUnit, ParamLength};
 use chip_sim::{
     MachineKinematicsConfig, SetupSimulationInput, SimComputeBackendChoice, SimEngineKind,

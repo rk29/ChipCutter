@@ -241,18 +241,3 @@ fn collect_svg_group(
         }
     }
 }
-
-/// Returns a deterministic W3C SVG badge/emblem fixture (`100mm × 60mm` physical units)
-/// featuring an outer plaque, a transformed `<g id="emblem" transform="translate(50, 30)">`
-/// concentric circular ring (`R = 18 mm` outer, `R = 10 mm` inner island!), and two side slots.
-pub fn sample_badge_logo_svg() -> String {
-    r#"<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="60mm" viewBox="0 0 100 60">
-  <g id="plaque">
-    <rect x="4" y="4" width="92" height="52" rx="6" ry="6" fill="none" stroke="black"/>
-  </g>
-  <g id="emblem" transform="translate(50, 30)">
-    <path d="M -18 0 A 18 18 0 1 0 18 0 A 18 18 0 1 0 -18 0 Z M -10 0 A 10 10 0 1 1 10 0 A 10 10 0 1 1 -10 0 Z" fill="black"/>
-  </g>
-</svg>"#
-        .to_string()
-}

@@ -12,9 +12,10 @@ use chip_cam::{
     ResolvedHeights, ResolvedSetup, SharedAvoidRegion, SurfaceMesh3D, ToolOperationClass,
     apply_machinability_fix, cutter_supports_operation,
 };
+use chip_machines::MachineDefinition;
 use chip_math::{DVec3, EvalContext};
 use chip_project::{ProjectDocument, UndoHistory};
-use chip_tools::{MachineDefinition, ToolLibrary};
+use chip_tools::ToolLibrary;
 
 use self::avoid_card::{
     AvoidCardAction, AvoidCardSetupView, create_and_link_shared_avoid,
@@ -2807,7 +2808,8 @@ mod tests {
 
     #[test]
     fn tool_tab_shows_readonly_project_material_pill_and_automatch_on_tool_switch() {
-        use chip_tools::{ALUMINUM_6063_T5_ID, ProjectMaterialSelection, builtin_carvera_machine};
+        use chip_machines::builtin_carvera_machine;
+        use chip_tools::{ALUMINUM_6063_T5_ID, ProjectMaterialSelection};
 
         let ctx = egui::Context::default();
         let carvera = builtin_carvera_machine();

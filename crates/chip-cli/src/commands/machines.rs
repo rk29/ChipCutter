@@ -1,6 +1,6 @@
 use std::{path::PathBuf, process::ExitCode};
 
-use chip_tools::{
+use chip_machines::{
     clone_machine_definition, export_machine_to_path, import_machine_from_path,
     load_available_machines, resolve_machine_definition_cli_override, save_user_machine,
 };

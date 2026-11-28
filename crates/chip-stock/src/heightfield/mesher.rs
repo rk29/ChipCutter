@@ -1,7 +1,7 @@
 use crate::{
-    mesher_common::{RAW_STOCK_SIDE_COLOR, op_color as stock_cell_color},
-    metrics::{SimStockColorMode, deviation_to_heatmap_rgba},
     types::{SimColoredVertex, SimMeshOptions, SimStockMesh, UNCUT_OP_IDX},
+    visual::{RAW_STOCK_SIDE_COLOR, op_color as stock_cell_color},
+    visual::{SimStockColorMode, deviation_to_heatmap_rgba},
 };
 
 use super::HeightfieldStock;

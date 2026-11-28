@@ -8,11 +8,11 @@
 //! together with deterministic 1-click [`MachinabilityFix`] mutations.
 
 use chip_cad::CadDocument;
+use chip_machines::MachineDefinition;
 use chip_math::{DisplayUnit, EvalContext, ParamLength};
 use chip_sketch::SketchLayer;
 use chip_tools::{
-    CoolantMode, CutterGeometry, MachineDefinition, Tool, WorkpieceMaterialProfile,
-    compute_adaptive_thinning_feed,
+    CoolantMode, CutterGeometry, Tool, WorkpieceMaterialProfile, compute_adaptive_thinning_feed,
 };
 use serde::{Deserialize, Serialize};
 
@@ -1296,12 +1296,14 @@ pub fn apply_machinability_fix(op: &mut Operation, fix: &MachinabilityFix) -> bo
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    use chip_machines::{
+        builtin_carvera_air_machine, builtin_carvera_z1_machine, builtin_milo_1_5_machine,
+    };
     use chip_math::{DisplayUnit, ParamLength};
     use chip_sketch::{SketchEntity, SketchEntityEntry, SketchLayer};
     use chip_tools::{
         ALUMINUM_6061_T6_ID, ALUMINUM_6063_T5_ID, CutterGeometry, ProjectMaterialSelection,
-        SpindleDirection, ToolId, builtin_carvera_air_machine, builtin_carvera_z1_machine,
-        builtin_milo_1_5_machine, resolve_workpiece_material,
+        SpindleDirection, ToolId, resolve_workpiece_material,
     };
 
     use crate::{

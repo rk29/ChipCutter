@@ -223,28 +223,7 @@ fn parse_ascii_stl(source_name: &str, bytes: &[u8]) -> Result<RawMeshData, CadEr
     })
 }
 
-/// Encodes `tris` as a standard little-endian binary STL byte buffer (`80-byte header + u32 count
-/// + 50 bytes/triangle`) with outward unit facet normals computed from `(v1 - v0) × (v2 - v0)`.
-pub fn encode_binary_stl(header_label: &str, tris: &[[DVec3; 3]]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(84 + tris.len() * 50);
-    let mut header = [0u8; 80];
-    let label_bytes = header_label.as_bytes();
-    let copy_len = label_bytes.len().min(79);
-    header[..copy_len].copy_from_slice(&label_bytes[..copy_len]);
-    out.extend_from_slice(&header);
-    out.extend_from_slice(&(tris.len() as u32).to_le_bytes());
-
-    for &[v0, v1, v2] in tris {
-        let n = (v1 - v0).cross(v2 - v0).normalize_or_zero();
-        for p in [n, v0, v1, v2] {
-            out.extend_from_slice(&(p.x as f32).to_le_bytes());
-            out.extend_from_slice(&(p.y as f32).to_le_bytes());
-            out.extend_from_slice(&(p.z as f32).to_le_bytes());
-        }
-        out.extend_from_slice(&0u16.to_le_bytes());
-    }
-    out
-}
+pub use chip_math::encode_binary_stl;
 
 fn stem_or_default(source_name: &str, fallback: &str) -> String {
     std::path::Path::new(source_name)

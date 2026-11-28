@@ -7,7 +7,7 @@ pub mod context;
 pub mod cylindrical;
 pub mod heightfield;
 pub mod metrics;
-pub mod render_handle;
+pub mod snapshot;
 pub mod tridexel;
 pub mod types;
 
@@ -16,12 +16,11 @@ pub use bvh::GpuMeshBvh;
 pub use checkpoints::{DEFAULT_GPU_CHECKPOINT_BUDGET_BYTES, GpuCheckpointCache};
 pub use context::GpuSimContext;
 pub use metrics::GpuErrorHistogram;
-pub use render_handle::{
-    GpuCylindricalRenderData, GpuHeightfieldRenderData, GpuStockRenderHandle,
-    GpuTriDexelRenderData, MAX_TRIDEXEL_EMIT_QUADS, PackedTriDexelQuad,
-    TRIDEXEL_DUAL_OFFSET_PACK_SCALE, TRIDEXEL_PACKED_QUAD_BYTES, oct_decode_unit_normal,
-    oct_encode_unit_normal, pack_oct_normal_pair_12bit, unpack_oct_normal_12bit,
+pub use snapshot::{
+    GpuCylindricalBuffers, GpuHeightfieldBuffers, GpuStockBufferSnapshot, GpuTriDexelBuffers,
+    TriDexelOverflowData,
 };
+pub use tridexel::build_tridexel_overflow_supplement_mesh;
 pub use types::{
     BvhDispatchUniforms, CylindricalUniforms, GPU_METRICS_HIST_BINS, GPU_METRICS_MAX_WORKGROUPS,
     GPU_TILE_SIZE, GpuMetricsPartial, GpuRotaryPose, GpuSweepChord, GpuToolProfile,
@@ -1985,117 +1984,6 @@ mod tests {
     }
 
     #[test]
-    fn gpu_tridexel_ultra_emit_does_not_truncate_z_plane_above_old_2_4m_cap() {
-        let ctx = GpuSimContext::shared_headless().expect("expected Vulkan/wgpu compute adapter");
-        // Match the `undercut-deburr` 100 × 80 × 29 mm stock at Ultra resolution (`448 × 358 × 130`).
-        let stock_spec = StockShapeSpec::Box {
-            aabb_wcs: Aabb3::new(DVec3::new(-50.0, -40.0, -29.0), DVec3::new(50.0, 40.0, 0.0)),
-        };
-        let mut td =
-            crate::tridexel::TriDexelStock::from_stock_spec(&stock_spec, SimResolution::Ultra)
-                .unwrap();
-        assert_eq!(td.dims[0], 448);
-
-        // Carve two full-length through-slots along X (mirroring T-slot + dovetail cavities)
-        // so Y-rays split into 3 spans and total emitted vertices exceed the old 2_400_000 cap!
-        let slot_tools = vec![make_tool(
-            "flat_8",
-            25.0,
-            CutterGeometry::FlatEndmill {
-                diameter_mm: 8.5,
-                flute_length_mm: 16.0,
-                overall_length_mm: 55.0,
-                shank_diameter_mm: 8.5,
-                flutes: 3,
-            },
-        )];
-        let tol = StockVerifyTolerances::default();
-        let chords = vec![
-            SweepChord {
-                motion: SweepMotion::Linear {
-                    p0: DVec3::new(-55.0, -20.0, -15.0),
-                    p1: DVec3::new(55.0, -20.0, -15.0),
-                    rotary_deg_0: 0.0,
-                    rotary_deg_1: 0.0,
-                },
-                op_idx: 0,
-                is_rapid: false,
-                profile_idx: 0,
-                verify_tol: tol,
-            },
-            SweepChord {
-                motion: SweepMotion::Linear {
-                    p0: DVec3::new(-55.0, 12.0, -15.0),
-                    p1: DVec3::new(55.0, 12.0, -15.0),
-                    rotary_deg_0: 0.0,
-                    rotary_deg_1: 0.0,
-                },
-                op_idx: 1,
-                is_rapid: false,
-                profile_idx: 0,
-                verify_tol: tol,
-            },
-        ];
-
-        let mut gpu = WgpuComputeBackend::new(
-            std::sync::Arc::clone(&ctx),
-            SimulatedStock::TriDexel(Box::new(td.clone())),
-            None,
-        );
-        let _ = gpu.sweep_batch(&chords, &slot_tools, false);
-        let handle = gpu.capture_render_handle(crate::metrics::SimStockColorMode::ByOperation);
-
-        // Read back the GPU stock to compute the exact inline span count across all 3 planes.
-        let (SimulatedStock::TriDexel(td_after), _) = gpu.into_parts() else {
-            panic!("expected TriDexel stock");
-        };
-        td = *td_after;
-
-        let mut expected_inline_spans: u64 = 0;
-        for axis in Axis3::ALL {
-            let p = td.plane(axis);
-            for (r, &cnt) in p.counts.iter().enumerate() {
-                let c = cnt as usize;
-                if c > 0 && c <= crate::tridexel::INLINE_DEXEL_SLOTS {
-                    let base = r * crate::tridexel::INLINE_DEXEL_SLOTS;
-                    for k in 0..c {
-                        let s = p.slots[base + k];
-                        if s.max_local > s.min_local {
-                            expected_inline_spans += 1;
-                        }
-                    }
-                }
-            }
-        }
-        let expected_verts = expected_inline_spans * 2 * 6;
-        assert!(
-            expected_verts > 2_400_000,
-            "regression fixture must exceed old 2_400_000 vertex cap (got {expected_verts})"
-        );
-
-        let GpuStockRenderHandle::TriDexel(ref td_render) = *handle else {
-            panic!("expected TriDexel GPU render handle");
-        };
-        let emitted_verts = u64::from(td_render.readback_emitted_vertex_count());
-        assert_eq!(
-            emitted_verts, expected_verts,
-            "Ultra Tri-Dexel GPU emitter truncated surfaces: emitted {emitted_verts} vs expected {expected_verts} (max_vertices={})",
-            td_render.max_vertices
-        );
-
-        // Verify worst-case 448³ cube fits within WebGPU's 128 MiB storage buffer binding limit!
-        let cube_rays = 3usize * 448 * 448;
-        let max_quads = render_handle::compute_tridexel_max_quads(ctx.device(), cube_rays);
-        let device_cap = (ctx.device().limits().max_storage_buffer_binding_size
-            / TRIDEXEL_PACKED_QUAD_BYTES as u64) as u32;
-        assert_eq!(max_quads, MAX_TRIDEXEL_EMIT_QUADS.min(device_cap));
-        assert!(
-            (max_quads as usize) * TRIDEXEL_PACKED_QUAD_BYTES <= 128 * 1024 * 1024,
-            "worst-case Ultra 448³ packed quad buffer must fit inside 128 MiB"
-        );
-    }
-
-    #[test]
     fn gpu_tridexel_rotary_indexed_below_equator_cardinal_and_simultaneous_match_cpu() {
         let Some(ctx) = GpuSimContext::shared_headless() else {
             return;
@@ -2342,99 +2230,6 @@ mod tests {
         assert!(
             (vc - vg).abs() / vc.max(1.0) < 1e-3,
             "CylindricalStock below-Z=0 CPU vs GPU parity mismatch: cpu={vc:.2}, gpu={vg:.2}"
-        );
-    }
-
-    #[test]
-    fn gpu_tridexel_surface_nets_emit_matches_cpu_surface_nets_on_cylinder() {
-        let Some(ctx) = GpuSimContext::shared_headless() else {
-            return;
-        };
-
-        let r_stock = 21.0;
-        let len = 80.0;
-        let stock_spec = StockShapeSpec::Cylinder {
-            axis: Axis3::X,
-            center_wcs: DVec3::ZERO,
-            radius_mm: r_stock,
-            min_axial_mm: -0.5 * len,
-            max_axial_mm: 0.5 * len,
-            aabb_wcs: Aabb3::new(
-                DVec3::new(-0.5 * len, -r_stock, -r_stock),
-                DVec3::new(0.5 * len, r_stock, r_stock),
-            ),
-        };
-        let rotary = RotaryStockSpec {
-            axis: Axis3::X,
-            direction_sign: 1.0,
-            axis_letter: 'A',
-            center_wcs: DVec3::ZERO,
-            stock_u_min: -0.5 * len,
-            stock_u_max: 0.5 * len,
-            stock_outer_radius_mm: r_stock,
-            chuck_u_min: -60.0,
-            chuck_u_max: -40.0,
-            chuck_radius_mm: 32.5,
-        };
-        let mut td =
-            crate::tridexel::TriDexelStock::from_stock_spec(&stock_spec, SimResolution::Standard)
-                .unwrap();
-        td.rotary = Some(rotary);
-
-        let tools = vec![make_tool(
-            "t_ball_3175",
-            28.0,
-            CutterGeometry::BallEndmill {
-                diameter_mm: 3.175,
-                flute_length_mm: 14.0,
-                overall_length_mm: 50.0,
-                shank_diameter_mm: 3.175,
-                flutes: 2,
-            },
-        )];
-        let tol = StockVerifyTolerances::default();
-        let chords = vec![SweepChord {
-            motion: SweepMotion::Linear {
-                p0: DVec3::new(-25.0, 0.0, 14.0),
-                p1: DVec3::new(25.0, 0.0, 14.0),
-                rotary_deg_0: 0.0,
-                rotary_deg_1: 180.0,
-            },
-            op_idx: 0,
-            profile_idx: 0,
-            is_rapid: false,
-            verify_tol: tol,
-        }];
-
-        let mut gpu = WgpuComputeBackend::new(
-            std::sync::Arc::clone(&ctx),
-            SimulatedStock::TriDexel(Box::new(td)),
-            None,
-        );
-        let _ = gpu.sweep_batch(&chords, &tools, false);
-        let handle = gpu.capture_render_handle(crate::metrics::SimStockColorMode::ByOperation);
-        let GpuStockRenderHandle::TriDexel(ref td_render) = *handle else {
-            panic!("expected TriDexel GPU render handle");
-        };
-        let gpu_quads = u64::from(td_render.readback_emitted_vertex_count()) / 6;
-
-        let (SimulatedStock::TriDexel(td_after), _) = gpu.into_parts() else {
-            panic!("expected TriDexel stock");
-        };
-        let cpu_mesh = crate::tridexel::tessellate_tridexel_stock_mesh_colored(
-            &td_after,
-            None,
-            crate::metrics::SimStockColorMode::ByOperation,
-        );
-        let cpu_quads = (cpu_mesh.indices.len() / 6) as u64;
-        assert!(
-            cpu_quads > 10_000,
-            "expected >10k Surface Nets quads on machined cylinder, got {cpu_quads}"
-        );
-        let ratio = gpu_quads as f64 / cpu_quads as f64;
-        assert!(
-            (0.95..=1.05).contains(&ratio),
-            "GPU Surface Nets quad count ({gpu_quads}) must closely match CPU Surface Nets ({cpu_quads}), ratio={ratio:.4}"
         );
     }
 

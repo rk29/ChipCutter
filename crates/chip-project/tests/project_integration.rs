@@ -2,15 +2,17 @@
 
 use chip_cad::{
     CadKernel, MonstertruckKernel, SurfaceKind, is_mesh_path, load_model_bytes_cad_doc,
-    load_model_entry_cad_doc, sample_multi_feature_bracket_step,
+    load_model_entry_cad_doc,
 };
 use chip_cam::{
     GeometrySelectionItem, HeightReference, HeightSpec, Operation, OperationKind, WorkOffsetSlot,
     cad_binding_to_sketch_face,
 };
+use chip_fixtures::sample_multi_feature_bracket_step;
 use chip_math::DEFAULT_TESS_CHORD_TOL_MM;
 use chip_tools::default_starter_tool_library;
 
+use chip_demos::*;
 use chip_project::*;
 
 #[test]
@@ -124,8 +126,8 @@ fn undo_redo_history_supports_100_steps_coalescing_and_branch_truncation() {
 fn dispatcher_generates_in_parallel_invalidates_on_edit_and_restores_clean_on_undo() {
     use std::{collections::HashSet, sync::Arc, time::Instant};
 
-    use chip_cad::sample_cam_torture_block_step;
     use chip_cam::OperationStatus;
+    use chip_fixtures::sample_cam_torture_block_step;
     use chip_math::ParamLength;
 
     let step_str = sample_cam_torture_block_step().unwrap();
@@ -241,10 +243,11 @@ fn dispatcher_generates_in_parallel_invalidates_on_edit_and_restores_clean_on_un
 #[test]
 fn associative_step_reload_v1_to_v2_rebinds_dirty_flags_deleted_needs_repick_and_passes_sim_oracle()
 {
-    use chip_cad::{TopologyGraph, sample_revised_part_pair_step};
+    use chip_cad::TopologyGraph;
     use chip_cam::{
         ChamferSourceMode, ChamferTraceMode, HoleMachiningMode, OperationStatus, StrategyParams,
     };
+    use chip_fixtures::sample_revised_part_pair_step;
     use chip_math::{ParamLength, approx_eq};
     use chip_sim::{MachineKinematicsConfig, SimResolution};
 
@@ -581,8 +584,8 @@ fn chipz_bundle_packs_deterministically_embeds_custom_posts_verifies_sha256_and_
 
 #[test]
 fn adaptive_and_rest_machining_dag_waves_dirty_propagation_and_undo_work() {
-    use chip_cad::sample_cam_torture_block_step;
     use chip_cam::OperationStatus;
+    use chip_fixtures::sample_cam_torture_block_step;
     use chip_math::ParamLength;
     use chip_sim::SimResolution;
 
@@ -674,8 +677,8 @@ fn adaptive_and_rest_machining_dag_waves_dirty_propagation_and_undo_work() {
 #[test]
 fn pure2d_dxf_router_panel_migrates_v1_schema_packs_vectors_and_passes_sim_oracle() {
     use chip_cad::CadDocument;
+    use chip_fixtures::sample_router_panel_dxf;
     use chip_sim::SimResolution;
-    use chip_sketch::sample_router_panel_dxf;
 
     // 1. Verify lossless v1 -> v2 schema migration
     let v1_toml = r#"
@@ -754,10 +757,11 @@ setups = []
 
 #[test]
 fn associative_planar_face_sketch_rebinds_across_step_v1_to_v2_and_checks_setup_z_alignment() {
-    use chip_cad::{TopologyGraph, sample_revised_part_pair_step};
+    use chip_cad::TopologyGraph;
     use chip_cam::{
         CamError, ChamferTraceMode, StrategyParams, extract_selection_features_with_sketches,
     };
+    use chip_fixtures::sample_revised_part_pair_step;
     use chip_math::ParamLength;
     use chip_sim::SimResolution;
     use chip_sketch::{
@@ -1102,7 +1106,7 @@ fn vcarve_sign_and_inlay_demo_passes_sim_and_posts_atc_and_grbl_split_files() {
 
 #[test]
 fn minimal_tutorial_projects_pass_heightmap_sim_with_zero_crashes() {
-    use chip_cad::{
+    use chip_fixtures::{
         tutorial_adaptive_pocket_step, tutorial_chamfer_engrave_block_step,
         tutorial_contour_plate_step, tutorial_drill_bore_plate_step, tutorial_facing_billet_step,
         tutorial_pocket_block_step,
@@ -1269,9 +1273,9 @@ fn minimal_tutorial_projects_pass_heightmap_sim_with_zero_crashes() {
 
 #[test]
 fn schema_v3_migrates_v1_and_v2_and_bundles_stl_obj_3mf_meshes() {
-    use chip_cad::{
-        MeshUnitKind, sample_box_3mf_bytes, sample_relief_wave_obj_text,
-        sample_sculpted_dome_stl_bytes,
+    use chip_cad::MeshUnitKind;
+    use chip_fixtures::{
+        sample_box_3mf_bytes, sample_relief_wave_obj_text, sample_sculpted_dome_stl_bytes,
     };
 
     // 1. Lossless v1 -> v3 and v2 -> v3 migration
@@ -1304,7 +1308,7 @@ sha256 = "abc"
     // 2. Mesh ModelEntry with explicit `unit_override = "inch"` serializes cleanly
     let stl_bytes = sample_sculpted_dome_stl_bytes();
     let obj_bytes = sample_relief_wave_obj_text().into_bytes();
-    let mf_bytes = sample_box_3mf_bytes(MeshUnitKind::Inch, None);
+    let mf_bytes = sample_box_3mf_bytes("inch", None);
 
     let mut proj = ProjectDocument::new("Phase 5 Mesh Bundle");
     proj.models = vec![
@@ -1374,7 +1378,8 @@ sha256 = "abc"
 
 #[test]
 fn sculpted_mesh_dome_3d_adaptive_and_waterline_roundtrips_simulates_and_posts_gcode() {
-    use chip_cad::{MeshImportOptions, load_mesh_cad_document, sample_sculpted_dome_stl_bytes};
+    use chip_cad::{MeshImportOptions, load_mesh_cad_document};
+    use chip_fixtures::sample_sculpted_dome_stl_bytes;
     use chip_post::builtin_post_profiles;
     use chip_sim::SimResolution;
 
@@ -1469,7 +1474,8 @@ fn sculpted_mesh_dome_3d_adaptive_and_waterline_roundtrips_simulates_and_posts_g
 
 #[test]
 fn relief_wave_mesh_sample_round_trips_simulates_and_posts_cleanly() {
-    use chip_cad::{MeshImportOptions, load_mesh_cad_document, sample_relief_wave_obj_text};
+    use chip_cad::{MeshImportOptions, load_mesh_cad_document};
+    use chip_fixtures::sample_relief_wave_obj_text;
     use chip_post::builtin_post_profiles;
     use chip_sim::SimResolution;
 
@@ -1562,10 +1568,8 @@ fn relief_wave_mesh_sample_round_trips_simulates_and_posts_cleanly() {
 
 #[test]
 fn tutorial_3d_surfacing_projects_roundtrip_simulate_crash_free_and_post() {
-    use chip_cad::{
-        MeshImportOptions, load_mesh_cad_document, sample_relief_wave_obj_text,
-        sample_sculpted_dome_stl_bytes,
-    };
+    use chip_cad::{MeshImportOptions, load_mesh_cad_document};
+    use chip_fixtures::{sample_relief_wave_obj_text, sample_sculpted_dome_stl_bytes};
     use chip_post::builtin_post_profiles;
     use chip_sim::SimResolution;
 
@@ -1759,9 +1763,8 @@ fn tutorial_3d_surfacing_projects_roundtrip_simulate_crash_free_and_post() {
 
 #[test]
 fn rotary_setup_roundtrips_toml_omits_when_disabled_and_validates_post_compatibility() {
-    use chip_cad::{
-        CadDocument, MeshImportOptions, load_mesh_cad_document, sample_rotary_shaft_stl_bytes,
-    };
+    use chip_cad::{CadDocument, MeshImportOptions, load_mesh_cad_document};
+    use chip_fixtures::sample_rotary_shaft_stl_bytes;
     use chip_post::builtin_post_profiles;
     use chip_sim::SimResolution;
 
@@ -1948,7 +1951,7 @@ fn rotary_setup_roundtrips_toml_omits_when_disabled_and_validates_post_compatibi
 
     // 6. Simultaneous 4-Axis Helical Flute (`X+Y+Z+A`) round-trips, validates, simulates
     //    crash-free, and posts simultaneous `G93 X Y Z A` G-code on linuxcnc_4axis & grblhal_4axis!
-    let flute_stl = chip_cad::sample_helical_flute_shaft_stl_bytes();
+    let flute_stl = chip_fixtures::sample_helical_flute_shaft_stl_bytes();
     let flute_doc = load_mesh_cad_document(
         "helical_flute_shaft.stl",
         &flute_stl,
@@ -2036,9 +2039,10 @@ fn rotary_setup_roundtrips_toml_omits_when_disabled_and_validates_post_compatibi
 
 #[test]
 fn tutorial_rotary_projects_roundtrip_simulate_crash_free_and_post() {
-    use chip_cad::{
-        MeshImportOptions, load_mesh_cad_document, sample_helical_flute_shaft_stl_bytes,
-        sample_rotary_shaft_stl_bytes, tutorial_indexed_4side_block_step,
+    use chip_cad::{MeshImportOptions, load_mesh_cad_document};
+    use chip_fixtures::{
+        sample_helical_flute_shaft_stl_bytes, sample_rotary_shaft_stl_bytes,
+        tutorial_indexed_4side_block_step,
     };
     use chip_post::builtin_post_profiles;
     use chip_sim::SimResolution;
@@ -2308,7 +2312,7 @@ fn tutorial_rotary_projects_roundtrip_simulate_crash_free_and_post() {
 
 #[test]
 fn machine_id_roundtrip_validation_warnings_and_chipz_bundling() {
-    use chip_tools::{
+    use chip_machines::{
         DEFAULT_MACHINE_ID, builtin_generic_machine, clone_machine_definition, save_user_machine_in,
     };
 
@@ -2339,7 +2343,7 @@ fn machine_id_roundtrip_validation_warnings_and_chipz_bundling() {
     op.feed_overrides.cutting_feed_mm_min = Some(1_200.0);
     op.feed_overrides.plunge_feed_mm_min = Some(300.0);
 
-    let step = chip_cad::tutorial_facing_billet_step().unwrap();
+    let step = chip_fixtures::tutorial_facing_billet_step().unwrap();
     let doc = MonstertruckKernel
         .load_step_bytes("billet.step", step.as_bytes(), DEFAULT_TESS_CHORD_TOL_MM)
         .unwrap();
@@ -2408,7 +2412,8 @@ fn machine_id_roundtrip_validation_warnings_and_chipz_bundling() {
             .join("machines/tiny-3ax.machine.toml")
             .is_file()
     );
-    let resolved = chip_tools::resolve_machine_definition("tiny-3ax", Some(&unpacked_dir)).unwrap();
+    let resolved =
+        chip_machines::resolve_machine_definition("tiny-3ax", Some(&unpacked_dir)).unwrap();
     assert_eq!(resolved.id, "tiny-3ax");
     assert_eq!(resolved.tools.len(), tiny.tools.len());
 
@@ -2417,11 +2422,11 @@ fn machine_id_roundtrip_validation_warnings_and_chipz_bundling() {
 
 #[test]
 fn milo_1_5_and_carvera_air_end_to_end_machining_simulates_crash_free_with_zero_warnings() {
-    use chip_cad::{sample_rotary_shaft_stl_bytes, tutorial_contour_plate_step};
     use chip_cam::{OperationKind, StrategyParams};
+    use chip_fixtures::{sample_rotary_shaft_stl_bytes, tutorial_contour_plate_step};
+    use chip_machines::{builtin_carvera_air_machine, builtin_milo_1_5_machine};
     use chip_math::ParamLength;
     use chip_sim::SimResolution;
-    use chip_tools::{builtin_carvera_air_machine, builtin_milo_1_5_machine};
 
     // 1. Millennium Milo v1.5 (LDO Kit): 2D Contour plate using Milo T1 (Ø6mm 1FL DLC Flat)
     let milo = builtin_milo_1_5_machine();
@@ -2644,7 +2649,8 @@ fn milestone_35_model_transform_toml_omission_chipz_roundtrip_and_reload_preserv
 
 #[test]
 fn milestone_37_tutorial_16_yup_stl_and_tilted_step_simulate_crash_free() {
-    use chip_cad::{MeshImportOptions, load_mesh_cad_document, tutorial_yup_bracket_stl_bytes};
+    use chip_cad::{MeshImportOptions, load_mesh_cad_document};
+    use chip_fixtures::tutorial_yup_bracket_stl_bytes;
     use chip_sim::{MachineKinematicsConfig, SimResolution};
 
     let starter = default_starter_tool_library();
@@ -2863,17 +2869,37 @@ fn milestone_45_thread_mill_project_roundtrips_toml_validates_and_generates_heli
     let resolved_setup = reloaded.setups[0]
         .resolve_with_sketches(&empty_cad, &reloaded.sketches, reloaded.display_units)
         .unwrap();
+    let post_stock = match resolved_setup.stock {
+        chip_cam::ResolvedStockGeometry::Box { aabb_wcs } => chip_post::PostStockSummary::Box {
+            size_mm: aabb_wcs.size(),
+        },
+        chip_cam::ResolvedStockGeometry::Cylinder {
+            axis,
+            radius_mm,
+            min_axial_mm,
+            max_axial_mm,
+            ..
+        } => chip_post::PostStockSummary::Cylinder {
+            axis_label: match axis {
+                chip_cam::StockAxis::X => 'X',
+                chip_cam::StockAxis::Y => 'Y',
+                chip_cam::StockAxis::Z => 'Z',
+            },
+            diameter_mm: 2.0 * radius_mm,
+            length_mm: (max_axial_mm - min_axial_mm).abs(),
+        },
+    };
     let post_in = chip_post::SetupPostInput {
         project_name: "m45_thread.chip.toml",
         setup_name: &reloaded.setups[0].name,
         wcs_slot: reloaded.setups[0].wcs_slot,
         wcs_origin_description: "Stock Top Front-Left".to_string(),
-        stock: resolved_setup.stock,
+        stock: post_stock,
         rotary: None,
         clearance_z_wcs: resolved_setup.clearance_z_wcs,
         retract_z_wcs: resolved_setup.retract_z_wcs,
         operations: vec![chip_post::OperationPostInput {
-            op: &reloaded.setups[0].operations[0],
+            op_name: &reloaded.setups[0].operations[0].name,
             tool: &reloaded.tools[0],
             toolpath: tp,
         }],
@@ -2894,7 +2920,7 @@ fn milestone_45_thread_mill_project_roundtrips_toml_validates_and_generates_heli
 
 #[test]
 fn milestone_47_thread_mill_manifold_generates_and_simulates_cleanly_in_heightmap_and_tridexel() {
-    use chip_cad::sample_threaded_manifold_step;
+    use chip_fixtures::sample_threaded_manifold_step;
     use chip_sim::{SimEngineKind, SimResolution};
 
     let step = sample_threaded_manifold_step().unwrap();
@@ -3001,11 +3027,12 @@ fn milestone_47_thread_mill_manifold_generates_and_simulates_cleanly_in_heightma
 
 #[test]
 fn milestone_60_workholding_zero_diff_toml_chipz_roundtrip_role_isolation_cache_and_validation() {
-    use chip_cad::{
-        CadKernel, MonstertruckKernel, sample_machined_plate_step,
-        sample_multi_feature_bracket_step, sample_sculpted_dome_stl_bytes,
-    };
+    use chip_cad::{CadKernel, MonstertruckKernel};
     use chip_cam::{FixtureBody, FixtureKind, Operation, OperationKind, resolve_setup_fixtures};
+    use chip_fixtures::{
+        sample_machined_plate_step, sample_multi_feature_bracket_step,
+        sample_sculpted_dome_stl_bytes,
+    };
     use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DVec2, DVec3, ParamLength};
     use chip_project::{
         DiagnosticSeverity, ModelEntry, ModelRole, ProjectDocument, compute_operation_input_hash,
@@ -3223,8 +3250,9 @@ fn milestone_60_workholding_zero_diff_toml_chipz_roundtrip_role_isolation_cache_
 
 #[test]
 fn m61_cam_torture_toe_clamp_between_pockets_auto_avoid_off_vs_on() {
-    use chip_cad::{CadKernel, MonstertruckKernel, sample_cam_torture_block_step};
+    use chip_cad::{CadKernel, MonstertruckKernel};
     use chip_cam::{FixtureBody, FixtureKind, SegmentMotion3D};
+    use chip_fixtures::sample_cam_torture_block_step;
     use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DVec2, ParamLength};
     use chip_sim::{SimComputeBackendChoice, SimEngineKind, SimIssueKind, SimResolution};
 

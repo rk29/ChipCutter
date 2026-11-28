@@ -5,8 +5,9 @@ mod tree_widget;
 
 use chip_cad::CadDocument;
 use chip_cam::{OperationStatus, ResolvedSetup, SharedAvoidRegion};
+use chip_machines::MachineDefinition;
 use chip_project::{ProjectDocument, ToolpathCache, UndoHistory};
-use chip_tools::{MachineDefinition, ToolLibrary};
+use chip_tools::ToolLibrary;
 use egui::{Id, Rect};
 
 use crate::{
@@ -3039,7 +3040,7 @@ mod tests {
         inspector_ctx: egui::Context,
         project: ProjectDocument,
         global_tools: ToolLibrary,
-        machines: Vec<chip_tools::MachineDefinition>,
+        machines: Vec<chip_machines::MachineDefinition>,
         history: UndoHistory,
         cache: ToolpathCache,
         active_setup_idx: usize,
@@ -3062,7 +3063,7 @@ mod tests {
                 inspector_ctx: egui::Context::default(),
                 project,
                 global_tools: chip_tools::default_starter_tool_library(),
-                machines: chip_tools::builtin_machine_definitions(),
+                machines: chip_machines::builtin_machine_definitions(),
                 history: UndoHistory::default(),
                 cache: ToolpathCache::new(4),
                 active_setup_idx: 0,

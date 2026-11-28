@@ -1,11 +1,11 @@
 use std::{collections::HashSet, path::PathBuf};
 
+use chip_fixtures::{sample_badge_logo_svg, sample_router_panel_dxf};
 use chip_math::{DisplayUnit, MM_PER_INCH, ParamLength};
 use chip_project::{ProjectDocument, UndoHistory, portable_model_path};
 use chip_sketch::{
     DxfImportOptions, SketchAnchor, SketchDiagnosticKind, SketchLayer, SketchPlaneRef,
     SvgImportOptions, VectorAssetFormat, VectorImportUnits, import_dxf_bytes, import_svg_bytes,
-    sample_badge_logo_svg, sample_router_panel_dxf,
 };
 use chip_tools::ToolLibrary;
 

@@ -15,19 +15,75 @@ use std::{
 use chip_cad::CadDocument;
 use chip_math::DVec3;
 use chip_project::{ProjectDocument, ToolpathCache};
+#[cfg(feature = "gpu-compute")]
+use chip_sim::GpuSimContext;
 use chip_sim::{
     ActiveSimBackendInfo, SetupSimulationResult, SimComputeBackendChoice, SimDiagnostic,
     SimEngineKind, SimProgressSnapshot, SimProgressTracker, SimResolution, SimStockColorMode,
-    SimStockMesh, SimTimingBreakdown, SimToolMesh, SimVerificationConfig, StockErrorReport,
-    StockModelKind, format_cycle_time_hms,
+    SimStockMesh, SimTimingBreakdown, SimVerificationConfig, StockErrorReport, StockModelKind,
+    format_cycle_time_hms,
 };
-#[cfg(feature = "gpu-compute")]
-use chip_sim::{GpuSimContext, GpuStockRenderHandle};
 use chip_tools::ToolId;
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use serde::Serialize;
 
-use crate::viewport::SimStockRenderSource;
+#[cfg(feature = "gpu-compute")]
+use crate::viewport::GpuStockRenderHandle;
+use crate::viewport::{SimStockRenderSource, SimToolMesh};
+
+/// Human-readable GUI description for a simulation engine combobox tooltip.
+pub(crate) const fn sim_engine_description(engine: SimEngineKind) -> &'static str {
+    match engine {
+        SimEngineKind::Heightmap => {
+            "Fast 2.5D Z-dexel heightfield (or polar cylindrical grid on 4th-axis setups). Best for rapid interactive scrubbing and quick crash checks; vertical walls snap to XY columns and overhangs/undercuts are not modeled."
+        }
+        SimEngineKind::TriDexel => {
+            "Full 3D volumetric stock using 3 orthogonal ray grids (X, Y, Z) with exact sub-voxel endpoints. Accurately models vertical walls, steep reliefs, undercuts, and 3D error-volume/RMS metrology (slower than Heightmap)."
+        }
+    }
+}
+
+/// Engine-aware GUI display label reflecting the max-axis grid dimension used by `engine`.
+pub(crate) const fn sim_resolution_label_for_engine(
+    res: SimResolution,
+    engine: SimEngineKind,
+) -> &'static str {
+    match (engine, res) {
+        (SimEngineKind::Heightmap, SimResolution::Standard) => "Standard (512)",
+        (SimEngineKind::Heightmap, SimResolution::Fine) => "Fine (1024)",
+        (SimEngineKind::Heightmap, SimResolution::Ultra) => "Ultra (2048)",
+        (SimEngineKind::TriDexel, SimResolution::Standard) => "Standard (160)",
+        (SimEngineKind::TriDexel, SimResolution::Fine) => "Fine (288)",
+        (SimEngineKind::TriDexel, SimResolution::Ultra) => "Ultra (448)",
+    }
+}
+
+/// Human-readable GUI tooltip explaining what `res` means for `engine`.
+pub(crate) const fn sim_resolution_description_for_engine(
+    res: SimResolution,
+    engine: SimEngineKind,
+) -> &'static str {
+    match (engine, res) {
+        (SimEngineKind::Heightmap, SimResolution::Standard) => {
+            "Up to 512 cells along the longest XY stock axis. Fast interactive scrubbing and quick crash checks."
+        }
+        (SimEngineKind::Heightmap, SimResolution::Fine) => {
+            "Up to 1024 cells along the longest XY stock axis (4x cells). Crisper small features and finer surface metrology."
+        }
+        (SimEngineKind::Heightmap, SimResolution::Ultra) => {
+            "Up to 2048 cells along the longest XY stock axis (16x cells). Highest 2.5D detail for tiny engravings and fine finishes (uses more RAM/CPU)."
+        }
+        (SimEngineKind::TriDexel, SimResolution::Standard) => {
+            "Up to 160 isotropic cells along the longest 3D axis across X, Y, and Z ray planes. Fast 3D volumetric verification and metrology."
+        }
+        (SimEngineKind::TriDexel, SimResolution::Fine) => {
+            "Up to 288 isotropic cells along the longest 3D axis across X, Y, and Z ray planes (~3.2x rays). High-precision 3D walls, scallops, and error-volume benchmarking."
+        }
+        (SimEngineKind::TriDexel, SimResolution::Ultra) => {
+            "Up to 448 isotropic cells along the longest 3D axis across X, Y, and Z ray planes (~7.8x rays). Ultra-fine 3D inspection and metrology (slower, higher memory use)."
+        }
+    }
+}
 
 use self::worker::{SimWorkerMsg, StockMeshMeta, StockRemeshKey, StockRemeshWorker};
 

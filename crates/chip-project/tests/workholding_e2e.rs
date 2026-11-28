@@ -5,21 +5,22 @@
 
 use chip_cad::{
     CadKernel, MeshImportOptions, MonstertruckKernel, load_mesh_bytes, load_mesh_cad_document,
-    sample_multi_feature_bracket_step, sample_sculpted_dome_stl_bytes,
 };
 use chip_cam::{
     HeightReference, HeightSpec, Operation, OperationKind, Setup, StockConfig, ViseClampAxis,
     WorkOffsetSlot,
 };
+use chip_demos::build_two_sided_vise_workholding_project;
+use chip_fixtures::sample_two_sided_vise_part_stl_bytes;
+use chip_fixtures::{sample_multi_feature_bracket_step, sample_sculpted_dome_stl_bytes};
 use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DisplayUnit, ParamLength};
 use chip_post::builtin_post_profiles;
 use chip_project::{
     FlipAxis, FlipJigConfig, FlipJigPinCount, ProjectDocument, SetupPostRequest, SetupSimRequest,
     SoftJawBoltPattern, SoftJawConfig, SoftJawOutputMode, ToolpathCache, build_soft_jaw_plan,
-    build_two_sided_flip_jig, build_two_sided_vise_workholding_project, compute_sha256_hex,
-    generate_project_blocking, post_process_project_setup, resolve_kinematics_for_key,
-    sample_two_sided_vise_part_stl_bytes, simulate_all_setups, simulate_project_setup,
-    validate_project,
+    build_two_sided_flip_jig, compute_sha256_hex, generate_project_blocking,
+    post_process_project_setup, resolve_kinematics_for_key, simulate_all_setups,
+    simulate_project_setup, validate_project,
 };
 use chip_sim::{SimComputeBackendChoice, SimEngineKind, SimResolution};
 use chip_tools::{CutterGeometry, default_starter_tool_library};

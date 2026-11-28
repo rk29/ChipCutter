@@ -1,9 +1,9 @@
 //! Unified **Application Settings** modal (`prefs.toml`-backed) consolidating infrequently changed
 //! Appearance, Viewport Navigation, Simulation Engine/Resolution/Skinning, and Machine Defaults.
 
+use chip_machines::MachineDefinition;
 use chip_math::DisplayUnit;
 use chip_sim::{ActiveSimBackendInfo, SimComputeBackendChoice, SimEngineKind, SimResolution};
-use chip_tools::MachineDefinition;
 use egui::{CornerRadius, Stroke};
 
 use crate::{
@@ -455,7 +455,9 @@ fn show_simulation_section(
                             .show_ui(ui, |ui| {
                                 for eng in SimEngineKind::ALL {
                                     ui.selectable_value(sctx.sim_engine, eng, eng.label())
-                                        .on_hover_text(eng.description());
+                                        .on_hover_text(
+                                            crate::panels::simulation::sim_engine_description(eng),
+                                        );
                                 }
                             });
                     },
@@ -470,15 +472,26 @@ fn show_simulation_section(
                     |ui| {
                         egui::ComboBox::from_id_salt("settings_sim_res_cb")
                             .width(SETTINGS_COMBO_W)
-                            .selected_text(sctx.sim_resolution.label_for_engine(active_eng))
+                            .selected_text(
+                                crate::panels::simulation::sim_resolution_label_for_engine(
+                                    *sctx.sim_resolution,
+                                    active_eng,
+                                ),
+                            )
                             .show_ui(ui, |ui| {
                                 for r in SimResolution::ALL {
                                     ui.selectable_value(
                                         sctx.sim_resolution,
                                         r,
-                                        r.label_for_engine(active_eng),
+                                        crate::panels::simulation::sim_resolution_label_for_engine(
+                                            r, active_eng,
+                                        ),
                                     )
-                                    .on_hover_text(r.description_for_engine(active_eng));
+                                    .on_hover_text(
+                                        crate::panels::simulation::sim_resolution_description_for_engine(
+                                            r, active_eng,
+                                        ),
+                                    );
                                 }
                             });
                     },
@@ -548,7 +561,10 @@ fn show_simulation_section(
             ui.label(
                 egui::RichText::new(format!(
                     "Active detail: {}",
-                    sctx.sim_resolution.description_for_engine(*sctx.sim_engine)
+                    crate::panels::simulation::sim_resolution_description_for_engine(
+                        *sctx.sim_resolution,
+                        *sctx.sim_engine
+                    )
                 ))
                 .small()
                 .color(tok.text_muted),
@@ -679,7 +695,7 @@ mod tests {
 
     #[test]
     fn settings_modal_renders_visible_controls_in_all_four_sections() {
-        let machines = chip_tools::builtin_machine_definitions();
+        let machines = chip_machines::builtin_machine_definitions();
         let expected = [
             (SettingsSection::General, "Workspace Theme"),
             (SettingsSection::Viewport, "Mouse Preset"),
@@ -760,7 +776,7 @@ mod tests {
     #[test]
     #[allow(clippy::expect_used)]
     fn application_settings_window_opens_full_width_with_zero_creep_for_30_frames() {
-        let machines = chip_tools::builtin_machine_definitions();
+        let machines = chip_machines::builtin_machine_definitions();
         let win_id = egui::Id::unique(super::APPLICATION_SETTINGS_WINDOW_ID);
 
         for section in SettingsSection::ALL {

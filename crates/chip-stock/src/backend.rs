@@ -8,16 +8,17 @@ use crate::{
     cylindrical::{CylindricalStock, tessellate_cylindrical_stock_mesh_with_options},
     heightfield::{HeightfieldStock, tessellate_stock_mesh_with_options},
     metrics::{
-        OperationErrorSnapshot, SimStockColorMode, StockErrorReport,
-        compute_cylindrical_error_report, compute_cylindrical_quick_error_summary,
-        compute_heightmap_error_report, compute_heightmap_quick_error_summary,
-        compute_tridexel_error_report, compute_tridexel_quick_error_summary,
+        OperationErrorSnapshot, StockErrorReport, compute_cylindrical_error_report,
+        compute_cylindrical_quick_error_summary, compute_heightmap_error_report,
+        compute_heightmap_quick_error_summary, compute_tridexel_error_report,
+        compute_tridexel_quick_error_summary,
     },
     tridexel::{TriDexelStock, tessellate_tridexel_stock_mesh_with_options},
     types::{
         ActiveSimBackendInfo, BatchSweepOutput, RotaryStockSpec, SimMeshOptions, SimStockMesh,
         StockPlaybackCursor, SweepChord, SweepToolSpec,
     },
+    visual::SimStockColorMode,
 };
 
 /// Concrete volumetric stock representation selected for a simulation run.

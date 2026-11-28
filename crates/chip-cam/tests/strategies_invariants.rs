@@ -2,16 +2,14 @@
 
 use std::sync::atomic::AtomicBool;
 
-use chip_cad::{
-    CadKernel, MonstertruckKernel, SurfaceKind, find_same_diameter_holes,
-    sample_cam_torture_block_step,
-};
+use chip_cad::{CadKernel, MonstertruckKernel, SurfaceKind, find_same_diameter_holes};
 use chip_cam::{
     BoxAnchor27, CamError, ChamferSourceMode, ChamferTraceMode, ClEvent, ContourCompensation,
     GeometrySelectionItem, HeightReference, HeightSpec, HoleMachiningMode, MotionRole, Operation,
     OperationKind, PocketStrategyKind, SegmentMotion3D, Setup, StockConfig, StrategyParams,
     TabPlacementMode, TabProfileKind, WcsOriginMode, WorkOffsetSlot, generate_operation_toolpath,
 };
+use chip_fixtures::sample_cam_torture_block_step;
 use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DVec2, DisplayUnit, ParamLength, approx_eq};
 use chip_tools::{CutterGeometry, Tool, default_starter_tool_library};
 
@@ -1444,15 +1442,13 @@ fn verifies_vcarve_medial_corner_climbs_two_tool_flat_clearance_and_male_inlay_p
 
 #[test]
 fn verifies_adaptive_3d_and_waterline_3d_on_stl_obj_and_step_against_sim_oracle() {
-    use chip_cad::{
-        MeshImportOptions, load_mesh_cad_document, sample_relief_wave_obj_text,
-        sample_sculpted_dome_stl_bytes,
-    };
+    use chip_cad::{MeshImportOptions, load_mesh_cad_document};
     use chip_cam::{
         HeightReference, HeightSpec, MachiningBoundaryMode, OperationGenRequest, SegmentMotion3D,
         StockConfig, StrategyParams, ToolContainmentMode, WaterlineOrderMode,
         generate_operation_toolpath_with_rest,
     };
+    use chip_fixtures::{sample_relief_wave_obj_text, sample_sculpted_dome_stl_bytes};
     use chip_sim::{
         MachineKinematicsConfig, SetupSimulationInput, SimOperationInput, SimResolution,
         SimVerificationConfig, run_setup_simulation,
@@ -1796,14 +1792,12 @@ fn verifies_adaptive_3d_and_waterline_3d_on_stl_obj_and_step_against_sim_oracle(
 
 #[test]
 fn milestone_18_3d_finishing_parallel_scallop_pencil_and_rest_oracles() {
-    use chip_cad::{
-        MeshImportOptions, load_mesh_cad_document, sample_relief_wave_obj_text,
-        sample_sculpted_dome_stl_bytes,
-    };
+    use chip_cad::{MeshImportOptions, load_mesh_cad_document};
     use chip_cam::{
         MachiningBoundaryMode, OperationGenRequest, ParallelCutDirection, RestMachiningConfig,
         RestMachiningMode, ToolContainmentMode, generate_operation_toolpath_with_rest,
     };
+    use chip_fixtures::{sample_relief_wave_obj_text, sample_sculpted_dome_stl_bytes};
     use chip_sim::{
         MachineKinematicsConfig, SetupSimulationInput, SimOperationInput, SimResolution,
         SimVerificationConfig, run_setup_simulation,
@@ -2325,11 +2319,12 @@ fn milestone_18_3d_finishing_parallel_scallop_pencil_and_rest_oracles() {
 
 #[test]
 fn rotary2linear_spiral_and_axial_parallel_on_x_and_y_axes_are_centerline_locked_and_crash_free() {
-    use chip_cad::{MeshImportOptions, load_mesh_cad_document, sample_rotary_shaft_stl_bytes};
+    use chip_cad::{MeshImportOptions, load_mesh_cad_document};
     use chip_cam::{
         AxisAnchor, OperationGenRequest, RotaryAxisKind, RotaryCutDirection, RotaryDriveMode,
         RotaryPatternMode, StockAxis, generate_operation_toolpath_with_rest,
     };
+    use chip_fixtures::sample_rotary_shaft_stl_bytes;
     use chip_sim::{
         MachineKinematicsConfig, SetupSimulationInput, SimOperationInput, SimResolution,
         SimVerificationConfig, run_setup_simulation,
@@ -2740,11 +2735,12 @@ fn wrap_cylinder_2d_pocket_respects_centerline_lock_arc_mapping_and_simulates_cl
 
 #[test]
 fn indexed_3plus1_four_flats_on_rotary_shaft_retract_safely_and_verify_crash_free() {
-    use chip_cad::{MeshImportOptions, load_mesh_cad_document, sample_rotary_shaft_stl_bytes};
+    use chip_cad::{MeshImportOptions, load_mesh_cad_document};
     use chip_cam::{
         AxisAnchor, OperationGenRequest, OperationRotaryMode, RotaryAxisKind, RotaryDriveMode,
         StockAxis, generate_operation_toolpath_with_rest,
     };
+    use chip_fixtures::sample_rotary_shaft_stl_bytes;
     use chip_sim::{
         MachineKinematicsConfig, SetupSimulationInput, SimOperationInput, SimResolution,
         SimVerificationConfig, run_setup_simulation,
@@ -2910,13 +2906,12 @@ fn indexed_3plus1_four_flats_on_rotary_shaft_retract_safely_and_verify_crash_fre
 
 #[test]
 fn rotary4axis_sim_off_centerline_helical_flutes_on_x_and_y_are_smooth_and_crash_free() {
-    use chip_cad::{
-        MeshImportOptions, load_mesh_cad_document, sample_helical_flute_shaft_stl_bytes,
-    };
+    use chip_cad::{MeshImportOptions, load_mesh_cad_document};
     use chip_cam::{
         OperationGenRequest, Rotary4AxisPattern, RotaryAxisKind, RotaryCutDirection,
         RotaryDriveMode, RotaryTiltMode, StockAxis, generate_operation_toolpath_with_rest,
     };
+    use chip_fixtures::sample_helical_flute_shaft_stl_bytes;
     use chip_sim::{
         MachineKinematicsConfig, SetupSimulationInput, SimOperationInput, SimResolution,
         SimVerificationConfig, run_setup_simulation,
@@ -3749,12 +3744,13 @@ fn rotary_4axis_and_2linear_clear_empty_center_without_leaving_stem() {
 
 #[test]
 fn m81_stepped_shaft_outer_radial_ceiling_reduces_passes_and_verifies_zero_gouges() {
-    use chip_cad::{MeshImportOptions, load_mesh_cad_document, sample_rotary_shaft_stl_bytes};
+    use chip_cad::{MeshImportOptions, load_mesh_cad_document};
     use chip_cam::{
         AxisAnchor, OperationGenRequest, Rotary4AxisPattern, Rotary4AxisSimParams,
         RotaryAxialBoundaryConfig, RotaryAxialBoundaryMode, RotaryAxisKind, RotaryDriveMode,
         RotaryPatternMode, RotaryTiltMode, StockAxis, generate_operation_toolpath_with_rest,
     };
+    use chip_fixtures::sample_rotary_shaft_stl_bytes;
     use chip_sim::{
         MachineKinematicsConfig, SetupSimulationInput, SimComputeBackendChoice, SimEngineKind,
         SimOperationInput, SimResolution, SimVerificationConfig, run_setup_simulation,
@@ -3971,12 +3967,12 @@ fn m81_stepped_shaft_outer_radial_ceiling_reduces_passes_and_verifies_zero_gouge
 fn m81_wrap_cylinder_and_indexed_3plus1_enforce_mandatory_chuck_guard_and_wrap_overlap_warning() {
     use chip_cad::{
         CadKernel, MeshImportOptions, MonstertruckKernel, SurfaceKind, load_mesh_cad_document,
-        sample_rotary_shaft_stl_bytes, tutorial_indexed_4side_block_step,
     };
     use chip_cam::{
         AxisAnchor, OperationGenRequest, OperationRotaryMode, RotaryAxialBoundaryMode,
         RotaryAxisKind, RotaryDriveMode, StockAxis, generate_operation_toolpath_with_rest,
     };
+    use chip_fixtures::{sample_rotary_shaft_stl_bytes, tutorial_indexed_4side_block_step};
     use chip_math::DEFAULT_TESS_CHORD_TOL_MM;
     use chip_sketch::{RectAnchorMode, SketchEntity, SketchEntityEntry, SketchLayer};
 

@@ -8,18 +8,22 @@
 
 use chip_cad::{
     CadDocument, CadKernel, MeshImportOptions, MonstertruckKernel, load_mesh_cad_document,
+};
+use chip_cam::FeedOptimizationConfig;
+use chip_demos::{
+    build_rotary_helical_flute_project, build_rotary_shaft_preview_project,
+    build_sculpted_mesh_dome_project, build_thread_mill_manifold_project,
+    build_tutorial_3d_adaptive_waterline_project, build_tutorial_3d_surface_finishing_project,
+    build_tutorial_adaptive_rest_project, build_tutorial_pocket_project,
+};
+use chip_fixtures::{
     sample_helical_flute_shaft_stl_bytes, sample_relief_wave_obj_text,
     sample_rotary_shaft_stl_bytes, sample_sculpted_dome_stl_bytes, sample_threaded_manifold_step,
     tutorial_adaptive_pocket_step, tutorial_pocket_block_step,
 };
-use chip_cam::FeedOptimizationConfig;
 use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, ParamLength};
 use chip_project::{
-    ProjectDocument, SetupSimRequest, ToolpathCache, build_rotary_helical_flute_project,
-    build_rotary_shaft_preview_project, build_sculpted_mesh_dome_project,
-    build_thread_mill_manifold_project, build_tutorial_3d_adaptive_waterline_project,
-    build_tutorial_3d_surface_finishing_project, build_tutorial_adaptive_rest_project,
-    build_tutorial_pocket_project, compute_sha256_hex, generate_project_blocking,
+    ProjectDocument, SetupSimRequest, ToolpathCache, compute_sha256_hex, generate_project_blocking,
     resolve_kinematics_for_key, simulate_project_setup,
 };
 use chip_sim::{SetupSimulationResult, SimComputeBackendChoice, SimEngineKind, SimResolution};

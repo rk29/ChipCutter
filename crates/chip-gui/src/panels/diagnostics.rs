@@ -2,11 +2,12 @@ use std::time::{Duration, Instant};
 
 use chip_cad::CadDocument;
 use chip_cam::{MachinabilityFix, MachinabilitySeverity, OperationStatus};
+use chip_machines::MachineDefinition;
 use chip_project::{
     ProjectDocument, ToolpathCache, evaluate_setup_machinability, validate_setup_machine_limits,
 };
 use chip_sim::{SetupSimulationResult, SimDiagnostic, SimSeverity};
-use chip_tools::{MachineDefinition, ToolLibrary};
+use chip_tools::ToolLibrary;
 
 use crate::{
     panels::operation_inspector::machinability_card::sanitize_physics_text,
@@ -881,11 +882,9 @@ mod tests {
     #[test]
     fn machinability_table_renders_and_routes_row_click_and_fix() {
         use chip_cam::{Operation, OperationKind, Setup, StockConfig, WorkOffsetSlot};
+        use chip_machines::builtin_carvera_air_machine;
         use chip_math::ParamLength;
-        use chip_tools::{
-            ALUMINUM_6063_T5_ID, CutterGeometry, ProjectMaterialSelection, ToolId,
-            builtin_carvera_air_machine,
-        };
+        use chip_tools::{ALUMINUM_6063_T5_ID, CutterGeometry, ProjectMaterialSelection, ToolId};
 
         let machine = builtin_carvera_air_machine();
         let mut project = ProjectDocument::new("DiagMach");

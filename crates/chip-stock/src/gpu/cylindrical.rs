@@ -21,7 +21,7 @@ use crate::{
 use super::{
     checkpoints::GpuCheckpointBuffers,
     context::{GpuSimContext, GrowableStorageBuffer},
-    render_handle::{GpuCylindricalRenderData, GpuStockRenderHandle},
+    snapshot::{GpuCylindricalBuffers, GpuStockBufferSnapshot},
     types::{
         CylindricalUniforms, GPU_TILE_SIZE, GpuRotaryPose, GpuToolProfile, GpuViolationAccum,
         POSE_FLAG_CHECK_HOLDER, POSE_FLAG_RAPID, POSE_FLAG_VERIFY,
@@ -672,8 +672,8 @@ impl GpuCylindricalState {
     }
 
     /// Captures a read-only GPU storage-buffer snapshot (`copy_buffer_to_buffer` into a pooled
-    /// `Arc<wgpu::Buffer>` pair) for zero-readback direct 4th-axis viewport rendering.
-    pub(crate) fn capture_render_handle(&mut self) -> Arc<GpuStockRenderHandle> {
+    /// `Arc<wgpu::Buffer>` pair) for zero-readback downstream 4th-axis presentation or inspection.
+    pub(crate) fn capture_buffer_snapshot(&mut self) -> Arc<GpuStockBufferSnapshot> {
         let cell_bytes = ((self.nu * self.ntheta) * std::mem::size_of::<f32>()) as u64;
         let (snap_r, snap_op) = if let Some((r, op)) = self
             .render_snap_pool
@@ -712,21 +712,19 @@ impl GpuCylindricalState {
             self.ctx.queue().submit(std::iter::once(encoder.finish()));
         }
 
-        Arc::new(GpuStockRenderHandle::Cylindrical(
-            GpuCylindricalRenderData {
-                nu: self.nu as u32,
-                ntheta: self.ntheta as u32,
-                rotary: self.rotary,
-                u_min: self.u_min,
-                u_max: self.u_max,
-                du: self.du,
-                dtheta: self.dtheta,
-                has_target: self.has_target,
-                r_stock_buf: snap_r,
-                r_target_buf: Arc::clone(&self.r_target_buf),
-                last_op_buf: snap_op,
-            },
-        ))
+        Arc::new(GpuStockBufferSnapshot::Cylindrical(GpuCylindricalBuffers {
+            nu: self.nu as u32,
+            ntheta: self.ntheta as u32,
+            rotary: self.rotary,
+            u_min: self.u_min,
+            u_max: self.u_max,
+            du: self.du,
+            dtheta: self.dtheta,
+            has_target: self.has_target,
+            r_stock_buf: snap_r,
+            r_target_buf: Arc::clone(&self.r_target_buf),
+            last_op_buf: snap_op,
+        }))
     }
 
     pub(crate) fn checkpoint_byte_size(&self) -> usize {

@@ -9,11 +9,12 @@ use chip_cam::{
     BoxAnchor27, Setup, SharedAvoidRegion, StockConfig, StrategyParams, WcsOriginMode,
     WorkOffsetSlot,
 };
+use chip_machines::{DEFAULT_MACHINE_ID, MachineDefinition};
 use chip_math::{DisplayUnit, ParamLength};
 use chip_sketch::{CustomFontMap, SketchEntity, SketchFontSource, SketchLayer};
 use chip_tools::{
-    DEFAULT_MACHINE_ID, MachineDefinition, ProjectMaterialSelection, Tool, ToolId,
-    WorkpieceMaterialProfile, match_best_preset_for_material, resolve_workpiece_material,
+    ProjectMaterialSelection, Tool, ToolId, WorkpieceMaterialProfile,
+    match_best_preset_for_material, resolve_workpiece_material,
 };
 use serde::{Deserialize, Serialize};
 
@@ -940,7 +941,8 @@ mod tests {
         use std::collections::BTreeMap;
 
         use chip_cam::{Operation, OperationKind, OperationStatus, StrategyParams};
-        use chip_tools::{CutterGeometry, Tool, ToolId, builtin_generic_machine};
+        use chip_machines::builtin_generic_machine;
+        use chip_tools::{CutterGeometry, Tool, ToolId};
 
         use super::{ProjectDocument, ToolSwapChoice};
 
@@ -1077,9 +1079,10 @@ mod tests {
     #[allow(clippy::unwrap_used)]
     fn workpiece_material_toml_roundtrip_and_apply_matching_presets_preserves_overrides() {
         use chip_cam::{Operation, OperationKind, OperationStatus};
+        use chip_machines::builtin_carvera_machine;
         use chip_tools::{
             ALUMINUM_6061_T6_ID, ALUMINUM_6063_T5_ID, CUSTOM_WORKPIECE_MATERIAL_ID,
-            ProjectMaterialSelection, builtin_carvera_machine,
+            ProjectMaterialSelection,
         };
 
         use super::ProjectDocument;

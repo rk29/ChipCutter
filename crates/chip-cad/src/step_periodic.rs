@@ -879,11 +879,12 @@ impl ParameterBoundary2D<PeriodicStepSurface> for PeriodicStepCurve {
 mod tests {
     use std::f64::consts::PI;
 
+    use chip_fixtures::sample_periodic_helical_sweep_step;
     use chip_math::DEFAULT_TESS_CHORD_TOL_MM;
     use monstertruck_io::step::load::step_geometry::{BsplineSurface, KnotVector};
 
     use super::*;
-    use crate::{CadKernel, MonstertruckKernel, SurfaceKind, sample_periodic_helical_sweep_step};
+    use crate::{CadKernel, MonstertruckKernel, SurfaceKind};
 
     #[test]
     fn periodic_helical_sweep_step_trims_seam_edge_and_tessellates_full_watertight_solid() {

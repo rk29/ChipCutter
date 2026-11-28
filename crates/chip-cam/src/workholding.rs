@@ -1556,10 +1556,8 @@ fn region_from_ccw_ring(pts: &[DVec2]) -> RegionSet2D {
 mod tests {
     use std::collections::HashMap;
 
-    use chip_cad::{
-        CadKernel, MeshImportOptions, MonstertruckKernel, load_mesh_cad_document,
-        sample_machined_plate_step, sample_sculpted_dome_stl_bytes,
-    };
+    use chip_cad::{CadKernel, MeshImportOptions, MonstertruckKernel, load_mesh_cad_document};
+    use chip_fixtures::{sample_machined_plate_step, sample_sculpted_dome_stl_bytes};
     use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, approx_eq};
 
     use super::*;

@@ -1392,7 +1392,8 @@ fn emit_linear_ramp_on_ring(
 mod tests {
     use std::sync::{Arc, atomic::AtomicBool};
 
-    use chip_cad::{CadKernel, MonstertruckKernel, SurfaceKind, tutorial_adaptive_pocket_step};
+    use chip_cad::{CadKernel, MonstertruckKernel, SurfaceKind};
+    use chip_fixtures::tutorial_adaptive_pocket_step;
     use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DisplayUnit, ParamLength, approx_eq};
     use chip_tools::{
         CoolantMode, CutterGeometry, CuttingPreset, SpindleDirection, SurfaceSpeedPresetSpec, Tool,

@@ -1,5 +1,6 @@
 use chip_math::{DVec3, DisplayUnit, MM_PER_INCH};
-use chip_sim::{ScrubSnapshot, SetupSimulationResult, StockErrorReport, deviation_to_heatmap_rgba};
+use chip_sim::{ScrubSnapshot, SetupSimulationResult, StockErrorReport};
+use chip_stock::deviation_to_heatmap_rgba;
 
 use super::SimulationUiAction;
 

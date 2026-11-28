@@ -1,6 +1,9 @@
 use std::{path::PathBuf, process::ExitCode};
 
 use chip_cam::MachinabilitySeverity;
+use chip_machines::{
+    builtin_generic_machine, resolve_machine_definition, resolve_machine_definition_cli_override,
+};
 use chip_post::{
     PostProfileSource, resolve_post_profile, resolve_post_profile_cli_override,
     validate_safe_output_filename,
@@ -15,9 +18,6 @@ use chip_project::{
 use chip_sim::{
     SetupSimulationResult, SimComputeBackendChoice, SimEngineKind, SimResolution, StockModelKind,
     format_cycle_time_hms,
-};
-use chip_tools::{
-    builtin_generic_machine, resolve_machine_definition, resolve_machine_definition_cli_override,
 };
 use clap::Args;
 use serde::Serialize;
@@ -310,10 +310,11 @@ pub fn run_simulate(args: SimulateArgs) -> Result<ExitCode, Box<dyn std::error::
 
     if !args.json {
         println!(
-            "=== ChipCutter {} Simulation: '{}' [{}] ===",
+            "=== ChipCutter {} Simulation: '{}' [{:?} ({})] ===",
             sim_engine.label(),
             proj_doc.project_name,
-            sim_res_enum.label_for_engine(sim_engine)
+            sim_res_enum,
+            sim_res_enum.max_grid_dim_for_engine(sim_engine),
         );
     }
 
@@ -371,13 +372,14 @@ pub fn run_simulate(args: SimulateArgs) -> Result<ExitCode, Box<dyn std::error::
                     "cpu"
                 };
                 println!(
-                    "  Benchmark: backend={} | adapter='{}' ({}) | engine={} | stock={} | resolution={}",
+                    "  Benchmark: backend={} | adapter='{}' ({}) | engine={} | stock={} | resolution={:?} ({})",
                     backend_mode,
                     sim.active_backend.adapter_name,
                     sim.active_backend.backend_api,
                     sim.engine.short_slug(),
                     stock_tag,
-                    sim.resolution.label_for_engine(sim.engine),
+                    sim.resolution,
+                    sim.resolution.max_grid_dim_for_engine(sim.engine),
                 );
                 println!(
                     "  Timing: total={:.2} ms (target_setup={:.2} ms, sweep={:.2} ms, metrics={:.2} ms) | segments={} | throughput={:.1} seg/s",

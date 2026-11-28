@@ -1,0 +1,24 @@
+//! Built-in demo/tutorial project builders and unified [`SampleCatalog`] (`chip-demos`).
+
+pub mod catalog;
+mod feature_samples;
+mod milling_2d;
+mod rotary_4axis;
+mod surface_3d;
+mod tutorials_2d;
+mod tutorials_3d;
+mod two_sided_vise;
+mod undercut_deburr;
+
+pub use catalog::{
+    SAMPLE_CATALOG, SampleAssetKind, SampleBuildContext, SampleCatalog, SampleFocusHint, SampleId,
+    SampleSpec,
+};
+pub use feature_samples::*;
+pub use milling_2d::*;
+pub use rotary_4axis::*;
+pub use surface_3d::*;
+pub use tutorials_2d::*;
+pub use tutorials_3d::*;
+pub use two_sided_vise::*;
+pub use undercut_deburr::*;

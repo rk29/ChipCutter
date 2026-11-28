@@ -2,8 +2,9 @@ use chip_cam::{
     ArcDir, ArcPlane, ChamferSourceMode, ChamferTraceMode, ClEvent, GeneratedToolpath, MotionRole,
     Operation, OperationKind, SegmentMotion3D, StrategyParams, ToolpathSegment3D,
 };
+use chip_machines::MachineKinematicsSpec;
 use chip_math::DVec3;
-use chip_tools::{MachineKinematicsSpec, Tool, ToolId};
+use chip_tools::{Tool, ToolId};
 use serde::{Deserialize, Serialize};
 
 /// Machine velocity, acceleration, cornering, and ATC parameters for cycle-time estimation (`06-simulation.md`).

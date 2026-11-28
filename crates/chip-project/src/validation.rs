@@ -10,9 +10,8 @@ use chip_cam::{
     resolve_fixture_body, validate_operation_extracted_geometry,
     validate_operation_strategy_and_rotary, validate_operation_undercut_depth,
 };
-use chip_tools::{
-    MachineDefinition, Tool, ToolLibrary, builtin_generic_machine, resolve_machine_definition,
-};
+use chip_machines::{MachineDefinition, builtin_generic_machine, resolve_machine_definition};
+use chip_tools::{Tool, ToolLibrary};
 use serde::{Deserialize, Serialize};
 
 use crate::document::{ModelRole, ProjectDocument, compute_sha256_hex, resolve_model_path};
@@ -1006,10 +1005,11 @@ pub fn evaluate_setup_machinability(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use chip_cad::{CadKernel, MonstertruckKernel, sample_overhang_flange_step};
+    use chip_cad::{CadKernel, MonstertruckKernel};
     use chip_cam::{
         Deburr3DParams, Operation, OperationKind, Setup, StrategyParams, WorkOffsetSlot,
     };
+    use chip_fixtures::sample_overhang_flange_step;
     use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, ParamLength};
     use chip_tools::{CutterGeometry, default_starter_tool_library, starter_lollipop_6mm};
 
@@ -1306,12 +1306,13 @@ auto_detect_edges = true
 
     #[test]
     fn m81_validates_rotary_axial_boundary_warnings_and_legacy_toml_compatibility() {
-        use chip_cad::{MeshImportOptions, load_mesh_cad_document, sample_rotary_shaft_stl_bytes};
+        use chip_cad::{MeshImportOptions, load_mesh_cad_document};
         use chip_cam::{
             BoxAnchor27, GeometrySelectionItem, HeightReference, HeightSpec,
             RotaryAxialBoundaryMode, RotaryAxisKind, RotaryDriveMode, StockAxis, StockConfig,
             ToolContainmentMode, WcsOriginMode,
         };
+        use chip_fixtures::sample_rotary_shaft_stl_bytes;
         use chip_sketch::{RectAnchorMode, SketchEntity, SketchEntityEntry, SketchLayer};
 
         let stl = sample_rotary_shaft_stl_bytes();

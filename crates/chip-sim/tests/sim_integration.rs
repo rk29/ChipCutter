@@ -1,14 +1,16 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use chip_cad::{CadKernel, MonstertruckKernel, sample_cam_torture_block_step};
+use chip_cad::{CadKernel, MonstertruckKernel};
 use chip_cam::{ClEvent, MotionRole, Setup, ToolpathBuilder, WorkOffsetSlot};
+use chip_fixtures::sample_cam_torture_block_step;
 use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DVec3, DisplayUnit, approx_eq};
 use chip_tools::{CutterGeometry, default_starter_tool_library};
 
+use chip_sim::chip_stock::*;
 use chip_sim::*;
 
 #[test]
-fn radial_cutter_profiles_and_3d_revolved_meshes_are_exact_for_all_six_types() {
+fn radial_cutter_profiles_are_exact_for_all_six_types() {
     let lib = default_starter_tool_library();
     assert_eq!(lib.tools.len(), 10);
 
@@ -72,12 +74,6 @@ fn radial_cutter_profiles_and_3d_revolved_meshes_are_exact_for_all_six_types() {
         3.0_f64.sqrt(),
         1e-9
     ));
-
-    for t in &lib.tools {
-        let mesh = build_cutter_assembly_mesh(t, 24, false);
-        assert!(!mesh.vertices.is_empty());
-        assert_eq!(mesh.indices.len() % 3, 0);
-    }
 }
 
 #[test]
@@ -328,10 +324,11 @@ fn fault_injection_catches_rapid_crash_target_gouge_flute_rub_holder_crash_and_u
 
 #[test]
 fn fault_injection_catches_3d_ball_endmill_gouge_on_sculpted_dome_mesh() {
-    use chip_cad::{MeshImportOptions, load_mesh_cad_document, sample_sculpted_dome_stl_bytes};
+    use chip_cad::{MeshImportOptions, load_mesh_cad_document};
     use chip_cam::{
         BoxAnchor27, MotionRole, Setup, ToolpathBuilder, WcsOriginMode, WorkOffsetSlot,
     };
+    use chip_fixtures::sample_sculpted_dome_stl_bytes;
     use chip_math::{DVec3, DisplayUnit};
     use chip_tools::default_starter_tool_library;
 
@@ -696,76 +693,6 @@ fn thread_mill_3d_cutter_mesh_and_non_monotonic_profile_are_exact() {
     assert!(approx_eq(mf.cutter_radius_at_z(10.0).unwrap(), 1.8, 1e-9));
     // Shank (`18.0 < z <= 24.0`) == `3.0 mm`
     assert!(approx_eq(mf.cutter_radius_at_z(21.0).unwrap(), 3.0, 1e-9));
-
-    // 3. Verify 3D revolved cutter meshes for both single-point and multi-form
-    for (tool, prof, expected_crests) in [(sp_tool, sp, 1usize), (&mf_tool, mf, 4usize)] {
-        for crash_hl in [false, true] {
-            let mesh = build_cutter_assembly_mesh(tool, 32, crash_hl);
-            assert!(!mesh.vertices.is_empty());
-            assert_eq!(mesh.indices.len() % 3, 0);
-            for &idx in &mesh.indices {
-                assert!((idx as usize) < mesh.vertices.len());
-            }
-
-            let mut max_r_flute = 0.0_f64;
-            let mut max_r_neck = 0.0_f64;
-            let mut max_r_shank = 0.0_f64;
-            let mut crest_z_levels: Vec<i32> = Vec::new();
-
-            for v in &mesh.vertices {
-                let n_len = (f64::from(v.normal[0]).powi(2)
-                    + f64::from(v.normal[1]).powi(2)
-                    + f64::from(v.normal[2]).powi(2))
-                .sqrt();
-                assert!(
-                    (n_len - 1.0).abs() < 1e-3,
-                    "vertex normal must be unit length, got {n_len}"
-                );
-                let r = f64::from(v.pos_mm[0]).hypot(f64::from(v.pos_mm[1]));
-                let z = f64::from(v.pos_mm[2]);
-                if (0.0..=prof.flute_length_mm + 1e-4).contains(&z) {
-                    max_r_flute = max_r_flute.max(r);
-                    if (r - prof.cutting_radius_mm).abs() < 1e-3 {
-                        let z_bucket = (z * 100.0).round() as i32;
-                        if !crest_z_levels.contains(&z_bucket) {
-                            crest_z_levels.push(z_bucket);
-                        }
-                    }
-                } else if (z - prof.neck_length_mm).abs() < 1e-3 {
-                    max_r_neck = max_r_neck.max(r);
-                } else if (z - prof.stickout_length_mm).abs() < 1e-3
-                    && r <= prof.shank_radius_mm + 1e-3
-                {
-                    max_r_shank = max_r_shank.max(r);
-                }
-            }
-
-            assert!(
-                approx_eq(max_r_flute, prof.cutting_radius_mm, 1e-3),
-                "flute band max radius {max_r_flute} != {}",
-                prof.cutting_radius_mm
-            );
-            assert!(
-                approx_eq(max_r_neck, prof.neck_radius_mm, 1e-3),
-                "relieved neck max radius {max_r_neck} != {}",
-                prof.neck_radius_mm
-            );
-            assert!(
-                max_r_neck < max_r_flute - 0.5,
-                "relieved neck ({max_r_neck}) must be visibly narrower than tooth crest ({max_r_flute})"
-            );
-            assert!(
-                approx_eq(max_r_shank, prof.shank_radius_mm, 1e-3),
-                "shank max radius {max_r_shank} != {}",
-                prof.shank_radius_mm
-            );
-            assert_eq!(
-                crest_z_levels.len(),
-                expected_crests,
-                "expected {expected_crests} distinct V-tooth crest rings, got {crest_z_levels:?}"
-            );
-        }
-    }
 }
 
 #[test]
@@ -1231,12 +1158,13 @@ fn thread_mill_fault_injection_catches_missing_pilot_plunge_and_neck_reach_excee
 fn heightmap_and_tridexel_pre_drilled_step_hole_thread_mill_report_zero_critical_issues() {
     use std::sync::atomic::AtomicBool;
 
-    use chip_cad::{SurfaceKind, sample_machined_plate_step};
+    use chip_cad::SurfaceKind;
     use chip_cam::{
         GeometrySelectionItem, HeightReference, HeightSpec, Operation, OperationGenRequest,
         OperationKind, StrategyParams, ThreadCutDirection, ThreadFormKind, ThreadHandedness,
         ThreadMillParams, generate_operation_toolpath_with_rest,
     };
+    use chip_fixtures::sample_machined_plate_step;
     use chip_math::ParamLength;
 
     // Load real STEP plate (80x60x16 mm) containing an exact Ø8.0 mm cylindrical through-hole
@@ -1814,7 +1742,7 @@ fn m61_holder_vs_vise_jaw_spoilboard_overcut_clamp_in_cut_and_cylindrical_parity
     // -------------------------------------------------------------------------
     // D. 4th-Axis Cylindrical CPU vs GPU FixtureCollision parity!
     // -------------------------------------------------------------------------
-    let shaft_stl = chip_cad::sample_rotary_shaft_stl_bytes();
+    let shaft_stl = chip_fixtures::sample_rotary_shaft_stl_bytes();
     let shaft_mesh = chip_cad::load_mesh_bytes(
         "rotary_shaft.stl",
         &shaft_stl,
@@ -1925,79 +1853,18 @@ fn m61_holder_vs_vise_jaw_spoilboard_overcut_clamp_in_cut_and_cylindrical_parity
 }
 
 #[test]
-fn m64_all_ten_cutter_meshes_and_undercut_sim_fault_detection() {
+fn m64_undercut_sim_fault_detection() {
     use chip_cam::{
         BoxAnchor27, FixedBoxXyAlign, FixedBoxZAlign, MotionRole, Setup, StockConfig,
         ToolpathBuilder, WcsOriginMode, WorkOffsetSlot,
     };
     use chip_math::{DVec3, DisplayUnit, ParamLength};
-    use chip_sim::{SimComputeBackendChoice, build_cutter_assembly_mesh};
-    use chip_tools::{
-        starter_dovetail_60deg_12mm, starter_lollipop_6mm, starter_tslot_12mm,
-        starter_undercut_tools,
-    };
+    use chip_sim::SimComputeBackendChoice;
+    use chip_tools::{starter_dovetail_60deg_12mm, starter_lollipop_6mm, starter_tslot_12mm};
 
-    // 1. Verify `build_cutter_assembly_mesh` across ALL 10 cutter geometry variants:
-    //    valid non-empty indices, finite unit outward-oriented normals, and correct Z/R spans!
-    let mut all_ten = default_starter_tool_library().tools;
-    all_ten.extend(starter_undercut_tools());
-    assert!(all_ten.len() >= 13);
-
-    let mut seen_kinds = std::collections::BTreeSet::new();
-    for tool in &all_ten {
-        seen_kinds.insert(tool.geometry.kind_label());
-        let mesh = build_cutter_assembly_mesh(tool, 24, false);
-        assert!(
-            !mesh.vertices.is_empty() && !mesh.indices.is_empty(),
-            "mesh for '{}' must be non-empty",
-            tool.name
-        );
-        assert_eq!(mesh.indices.len() % 3, 0);
-        for &idx in &mesh.indices {
-            assert!((idx as usize) < mesh.vertices.len());
-        }
-        let mut max_r = 0.0_f32;
-        let mut min_z = f32::INFINITY;
-        let mut max_z = f32::NEG_INFINITY;
-        for v in &mesh.vertices {
-            assert!(v.pos_mm.iter().all(|c| c.is_finite()));
-            let nlen =
-                (v.normal[0] * v.normal[0] + v.normal[1] * v.normal[1] + v.normal[2] * v.normal[2])
-                    .sqrt();
-            assert!(
-                (nlen - 1.0).abs() < 1e-3,
-                "non-unit normal on '{}': len={nlen}",
-                tool.name
-            );
-            // Outward check: radial dot product >= -1e-3 when away from axis
-            let r = v.pos_mm[0].hypot(v.pos_mm[1]);
-            if r > 0.25 {
-                let radial_dot = (v.pos_mm[0] * v.normal[0] + v.pos_mm[1] * v.normal[1]) / r;
-                assert!(
-                    radial_dot >= -0.05,
-                    "inward normal on '{}' at pos={:?}, n={:?}",
-                    tool.name,
-                    v.pos_mm,
-                    v.normal
-                );
-            }
-            max_r = max_r.max(r);
-            min_z = min_z.min(v.pos_mm[2]);
-            max_z = max_z.max(v.pos_mm[2]);
-        }
-        assert!(min_z.abs() < 1e-3, "tip of '{}' must sit at Z=0", tool.name);
-        assert!(max_z > tool.stickout_length_mm as f32 + 20.0);
-        assert!(max_r >= (0.5 * tool.geometry.cutting_diameter_mm()) as f32 - 0.1);
-    }
-    assert_eq!(
-        seen_kinds.len(),
-        10,
-        "expected all 10 CutterGeometry variants covered, got {seen_kinds:?}"
-    );
-
-    // 2. End-to-end Tri-Dexel undercut simulation in `chip-sim`:
-    //    Pre-slot with 6mm Flat -> carve T-slot with 12mm SlotMill -> zero critical errors,
-    //    then fault-inject a vertical plunge of Dovetail into solid stock -> critical error on CPU & GPU!
+    // End-to-end Tri-Dexel undercut simulation in `chip-sim`:
+    // Pre-slot with 6mm Flat -> carve T-slot with 12mm SlotMill -> zero critical errors,
+    // then fault-inject a vertical plunge of Dovetail into solid stock -> critical error on CPU & GPU!
     let doc = chip_cad::CadDocument::empty();
     let lib = default_starter_tool_library();
     let flat_6 = &lib.tools[0];
@@ -2143,13 +2010,12 @@ fn m64_all_ten_cutter_meshes_and_undercut_sim_fault_detection() {
 fn deburr3d_curved_nonplanar_edge_and_stepped_wall_trimming_cpu_and_gpu_tridexel() {
     use std::sync::atomic::AtomicBool;
 
-    use chip_cad::{
-        CadKernel, CurveKind, MonstertruckKernel, sample_sloped_boss_stepped_pocket_step,
-    };
+    use chip_cad::{CadKernel, CurveKind, MonstertruckKernel};
     use chip_cam::{
         BoxAnchor27, Deburr3DParams, MotionRole, Operation, OperationKind, SegmentMotion3D, Setup,
         StockConfig, StrategyParams, WcsOriginMode, WorkOffsetSlot, generate_operation_toolpath,
     };
+    use chip_fixtures::sample_sloped_boss_stepped_pocket_step;
     use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DisplayUnit, ParamLength};
     use chip_tools::{CutterGeometry, default_starter_tool_library};
 
@@ -2383,11 +2249,12 @@ fn deburr3d_curved_nonplanar_edge_and_stepped_wall_trimming_cpu_and_gpu_tridexel
 fn deburr3d_lollipop_underside_back_chamfer_cpu_and_gpu_tridexel() {
     use std::sync::atomic::AtomicBool;
 
-    use chip_cad::{CadKernel, MonstertruckKernel, sample_overhang_flange_step};
+    use chip_cad::{CadKernel, MonstertruckKernel};
     use chip_cam::{
         BoxAnchor27, Deburr3DParams, MotionRole, Operation, OperationKind, SegmentMotion3D, Setup,
         StockConfig, StrategyParams, WcsOriginMode, WorkOffsetSlot, generate_operation_toolpath,
     };
+    use chip_fixtures::sample_overhang_flange_step;
     use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DisplayUnit, ParamLength};
     use chip_tools::starter_lollipop_6mm;
 
@@ -2512,11 +2379,12 @@ fn deburr3d_lollipop_underside_back_chamfer_cpu_and_gpu_tridexel() {
 fn deburr3d_auto_detect_sharp_edges_ignores_tangent_fillets_and_vertical_walls() {
     use std::sync::atomic::AtomicBool;
 
-    use chip_cad::{CadKernel, MonstertruckKernel, sample_machined_plate_step};
+    use chip_cad::{CadKernel, MonstertruckKernel};
     use chip_cam::{
         BoxAnchor27, Deburr3DParams, MotionRole, Operation, OperationKind, SegmentMotion3D, Setup,
         StrategyParams, WcsOriginMode, WorkOffsetSlot, generate_operation_toolpath,
     };
+    use chip_fixtures::sample_machined_plate_step;
     use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DisplayUnit, ParamLength};
     use chip_tools::{CutterGeometry, default_starter_tool_library};
 
@@ -3343,11 +3211,12 @@ fn m66_undercut3d_lollipop_neck_clipping_and_tridexel_parity() {
 fn periodic_helical_sweep_step_parallel3d_respects_helix_geometry_with_zero_gouges() {
     use std::sync::atomic::AtomicBool;
 
-    use chip_cad::{CadKernel, MonstertruckKernel, sample_periodic_helical_sweep_step};
+    use chip_cad::{CadKernel, MonstertruckKernel};
     use chip_cam::{
         BoxAnchor27, MotionRole, Operation, OperationKind, Parallel3DParams, SegmentMotion3D,
         Setup, StrategyParams, WcsOriginMode, WorkOffsetSlot, generate_operation_toolpath,
     };
+    use chip_fixtures::sample_periodic_helical_sweep_step;
     use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DisplayUnit, ParamLength};
     use chip_tools::{CutterGeometry, default_starter_tool_library};
 

@@ -20,4 +20,5 @@ skrifa.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]
+chip-fixtures.workspace = true
 toml.workspace = true

@@ -12,13 +12,15 @@ use chip_project::{
     resolve_setup_kinematics, simulate_all_setups, simulate_project_setup,
 };
 #[cfg(feature = "gpu-compute")]
-use chip_sim::{GpuCheckpointCache, GpuSimContext, WgpuComputeBackend};
+use chip_sim::{GpuSimContext, WgpuComputeBackend};
 use chip_sim::{
     ScrubSnapshot, SetupSimulationInput, SetupSimulationResult, SimEngineKind, SimError,
     SimMeshOptions, SimOperationInput, SimProgressTracker, SimStockColorMode, SimStockMesh,
     SimulatedStock, SimulatedStockPlaybackExt, StockPlaybackCursor, format_cycle_time_hms,
     run_setup_simulation,
 };
+#[cfg(feature = "gpu-compute")]
+use chip_stock::GpuCheckpointCache;
 use chip_tools::Tool;
 use crossbeam_channel::{Receiver, Sender, unbounded};
 
@@ -630,7 +632,7 @@ impl SimulationPanelState {
             setup.name,
             engine.label(),
             backend_choice.label(),
-            resolution.label_for_engine(engine)
+            super::sim_resolution_label_for_engine(resolution, engine)
         ));
 
         let tx = self.tx.clone();
@@ -790,7 +792,7 @@ impl SimulationPanelState {
             proj_owned.setups.len(),
             engine.label(),
             backend_choice.label(),
-            resolution.label_for_engine(engine),
+            super::sim_resolution_label_for_engine(resolution, engine),
         ));
 
         let tx = self.tx.clone();

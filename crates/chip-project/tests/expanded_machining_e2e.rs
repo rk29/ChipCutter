@@ -3,15 +3,16 @@
 //! End-to-end Phase 18 expanded machining regression, CPU-vs-GPU Tri-Dexel parity, and
 //! undercut safety fault-injection suite (`chip-project`, Milestone 67).
 
-use chip_cad::{CadKernel, MonstertruckKernel, sample_undercut_deburr_block_step_bytes};
+use chip_cad::{CadKernel, MonstertruckKernel};
 use chip_cam::{MotionRole, ToolpathBuilder};
+use chip_demos::build_undercut_deburr_block_project;
+use chip_fixtures::sample_undercut_deburr_block_step_bytes;
 use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DVec3, DisplayUnit};
 use chip_post::builtin_post_profiles;
 use chip_project::{
-    ProjectDocument, SetupPostRequest, SetupSimRequest, ToolpathCache,
-    build_undercut_deburr_block_project, compute_sha256_hex, generate_project_blocking,
-    post_process_project_setup, resolve_kinematics_for_key, simulate_project_setup,
-    validate_project,
+    ProjectDocument, SetupPostRequest, SetupSimRequest, ToolpathCache, compute_sha256_hex,
+    generate_project_blocking, post_process_project_setup, resolve_kinematics_for_key,
+    simulate_project_setup, validate_project,
 };
 use chip_sim::{
     MachineKinematicsConfig, SetupSimulationInput, SimComputeBackendChoice, SimEngineKind,

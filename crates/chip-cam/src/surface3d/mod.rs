@@ -126,7 +126,8 @@ impl SurfaceMesh3D {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use chip_cad::{MeshImportOptions, load_mesh_cad_document, sample_sculpted_dome_stl_bytes};
+    use chip_cad::{MeshImportOptions, load_mesh_cad_document};
+    use chip_fixtures::sample_sculpted_dome_stl_bytes;
     use chip_math::{DVec2, DVec3, DisplayUnit, RigidFrame3, approx_eq};
     use chip_tools::CutterGeometry;
 

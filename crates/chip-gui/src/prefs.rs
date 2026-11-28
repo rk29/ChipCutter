@@ -24,7 +24,7 @@ fn default_true() -> bool {
 }
 
 fn default_machine_id() -> String {
-    chip_tools::DEFAULT_MACHINE_ID.to_string()
+    chip_machines::DEFAULT_MACHINE_ID.to_string()
 }
 
 /// Persistent user preferences stored in `prefs.toml` (`08-ui-viewport.md` §Persistent User Preferences).
@@ -211,7 +211,10 @@ mod tests {
         "#;
         let partial = UserPreferences::from_toml_str(minimal).unwrap();
         assert_eq!(partial.theme, AppTheme::Light);
-        assert_eq!(partial.default_machine_id, chip_tools::DEFAULT_MACHINE_ID);
+        assert_eq!(
+            partial.default_machine_id,
+            chip_machines::DEFAULT_MACHINE_ID
+        );
         assert_eq!(partial.sim_engine, SimEngineKind::Heightmap);
         assert_eq!(partial.sim_backend, SimComputeBackendChoice::Auto);
         assert!(partial.show_toolpaths);

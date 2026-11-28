@@ -19,13 +19,16 @@ gpu-compute = ["chip-sim/gpu-compute", "chip-project/gpu-compute"]
 
 [dependencies]
 chip-math.workspace = true
+chip-fixtures.workspace = true
 chip-cad.workspace = true
 chip-sketch.workspace = true
-chip-tools.workspace = true
+chip-tools = { workspace = true, features = ["user-config", "fusion-import"] }
+chip-machines.workspace = true
 chip-cam.workspace = true
 chip-sim.workspace = true
 chip-post.workspace = true
 chip-project.workspace = true
+chip-demos.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true

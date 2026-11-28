@@ -16,8 +16,7 @@ use std::sync::atomic::AtomicBool;
 
 use chip_cad::{
     CadDocument, CadKernel, MeshImportOptions, MonstertruckKernel, SurfaceKind, TopologyGraph,
-    find_same_diameter_holes, load_mesh_cad_document, sample_multi_feature_bracket_step,
-    sample_sculpted_dome_stl_bytes,
+    find_same_diameter_holes, load_mesh_cad_document,
 };
 use chip_cam::{
     Adaptive3DParams, AvoidRegionConfig, BoxAnchor27, CamError, Contour2DParams, Deburr3DParams,
@@ -30,6 +29,7 @@ use chip_cam::{
     ToolContainmentMode, VCarveParams, Waterline3DParams, WcsOriginMode, WorkOffsetSlot,
     generate_operation_toolpath_with_rest, resolve_setup_fixtures_parametric,
 };
+use chip_fixtures::{sample_multi_feature_bracket_step, sample_sculpted_dome_stl_bytes};
 use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DVec2, DVec3, DisplayUnit, ParamLength};
 use chip_project::{
     ProjectDocument, SetupSimRequest, ToolpathCache, compute_operation_input_hash,

@@ -371,13 +371,11 @@ fn signatures_nearly_identical(a: &GeometricSignature, b: &GeometricSignature) -
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    use chip_fixtures::{sample_ambiguous_twin_hole_step, sample_revised_part_pair_step};
     use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, approx_eq};
 
     use super::*;
-    use crate::{
-        CadKernel, MonstertruckKernel, SurfaceKind, sample_ambiguous_twin_hole_step,
-        sample_revised_part_pair_step,
-    };
+    use crate::{CadKernel, MonstertruckKernel, SurfaceKind};
 
     #[test]
     fn rematches_resized_pocket_moved_holes_permuted_ids_and_detects_missing_or_ambiguous_features()

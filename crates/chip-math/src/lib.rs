@@ -17,7 +17,7 @@ pub use geom2d::{
     point_to_segment_dist_sq_2d, segment_to_segment_dist_2d,
 };
 pub use geom3d::{
-    Aabb3, Ray3, SegmentHit, circumcircle_3d, rotation_matrix_to_xyz_euler_deg,
+    Aabb3, Ray3, SegmentHit, circumcircle_3d, encode_binary_stl, rotation_matrix_to_xyz_euler_deg,
     simplify_3d_polyline_rdp,
 };
 pub use glam::{DAffine2, DAffine3, DMat2, DMat3, DMat4, DQuat, DVec2, DVec3, DVec4};

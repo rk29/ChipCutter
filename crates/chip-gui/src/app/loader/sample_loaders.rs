@@ -1,20 +1,9 @@
 use std::time::Instant;
 
-use chip_cad::{
-    TopologyGraph, load_model_bytes_cad_doc, sample_cam_torture_block_step,
-    sample_curved_deburr_overhang_step_bytes, sample_dovetail_rail_keyway_step_bytes,
-    sample_helical_flute_shaft_stl_bytes, sample_indexed_4sided_bar_step_bytes,
-    sample_keepout_clamp_plate_step_bytes, sample_machined_plate_step,
-    sample_multi_feature_bracket_step, sample_relief_wave_obj_text, sample_revised_part_pair_step,
-    sample_rotary_shaft_stl_bytes, sample_sculpted_dome_stl_bytes, sample_sculpted_mount_3mf_bytes,
-    sample_threaded_manifold_step, sample_undercut_deburr_block_step_bytes,
-    tutorial_adaptive_pocket_step, tutorial_contour_plate_step,
-};
-use chip_project::{
-    build_pure2d_router_panel_demo_project, build_revision_v1_demo_project,
-    build_rotary_wrapped_engraving_project, build_svg_badge_sign_project, compute_sha256_hex,
-    sample_two_sided_vise_part_stl_bytes,
-};
+use chip_cad::{TopologyGraph, load_model_bytes_cad_doc};
+use chip_demos::{SampleBuildContext, SampleFocusHint, SampleId, build_revision_v1_demo_project};
+use chip_fixtures::sample_revised_part_pair_step;
+use chip_project::compute_sha256_hex;
 
 use crate::{
     app::ChipCutterApp,
@@ -24,110 +13,54 @@ use crate::{
 use super::{LoadJobResult, LoadPurpose, parse_model_bytes_job, parse_step_bytes_job};
 
 impl ChipCutterApp {
-    pub(crate) fn spawn_sculpted_mesh_dome_load(&mut self, egui_ctx: egui::Context) {
+    /// Spawns a background load for any 3D STEP/Mesh sample registered in [`chip_demos::SampleCatalog`].
+    pub(crate) fn spawn_catalog_sample_load(
+        &mut self,
+        sample_id: SampleId,
+        seed_demo_ops: bool,
+        egui_ctx: egui::Context,
+    ) {
+        let spec = sample_id.spec();
         let generation = self.begin_model_load_generation();
-        self.logs
-            .push("Generating watertight Sculpted Dome (STL Mesh) sample…".to_string());
+        self.logs.push(spec.load_status_message.to_string());
+        let purpose = if seed_demo_ops {
+            LoadPurpose::SeedSample(sample_id)
+        } else {
+            LoadPurpose::SeedBlankSample
+        };
         let tx = self.job_tx.clone();
         rayon::spawn(move || {
             let t0 = Instant::now();
-            let stl_bytes = sample_sculpted_dome_stl_bytes();
-            let res = parse_model_bytes_job(
-                generation,
-                "sculpted_dome.stl".to_string(),
-                stl_bytes,
-                None,
-                None,
-                LoadPurpose::SeedSculptedMeshDome,
-                t0,
-            );
-            let _ = tx.send(res);
-            egui_ctx.request_repaint();
-        });
-    }
-
-    pub(crate) fn spawn_relief_wave_mesh_load(&mut self, egui_ctx: egui::Context) {
-        let generation = self.begin_model_load_generation();
-        self.logs
-            .push("Generating Relief Wave (OBJ Mesh) 3D finishing sample…".to_string());
-        let tx = self.job_tx.clone();
-        rayon::spawn(move || {
-            let t0 = Instant::now();
-            let obj_bytes = sample_relief_wave_obj_text().into_bytes();
-            let res = parse_model_bytes_job(
-                generation,
-                "relief_wave.obj".to_string(),
-                obj_bytes,
-                None,
-                None,
-                LoadPurpose::SeedReliefWaveMesh,
-                t0,
-            );
-            let _ = tx.send(res);
-            egui_ctx.request_repaint();
-        });
-    }
-
-    pub(crate) fn spawn_rotary_shaft_load(&mut self, egui_ctx: egui::Context) {
-        let generation = self.begin_model_load_generation();
-        self.logs
-            .push("Generating Rotary Indexed Shaft (4th-Axis A) sample…".to_string());
-        let tx = self.job_tx.clone();
-        rayon::spawn(move || {
-            let t0 = Instant::now();
-            let stl_bytes = sample_rotary_shaft_stl_bytes();
-            let res = parse_model_bytes_job(
-                generation,
-                "rotary_shaft.stl".to_string(),
-                stl_bytes,
-                None,
-                None,
-                LoadPurpose::SeedRotaryIndexedShaft,
-                t0,
-            );
-            let _ = tx.send(res);
-            egui_ctx.request_repaint();
-        });
-    }
-
-    pub(crate) fn spawn_rotary_helical_flute_load(&mut self, egui_ctx: egui::Context) {
-        let generation = self.begin_model_load_generation();
-        self.logs
-            .push("Generating Simultaneous 4-Axis Helical Flute (X+Y+Z+A) sample…".to_string());
-        let tx = self.job_tx.clone();
-        rayon::spawn(move || {
-            let t0 = Instant::now();
-            let stl_bytes = sample_helical_flute_shaft_stl_bytes();
-            let res = parse_model_bytes_job(
-                generation,
-                "helical_flute_shaft.stl".to_string(),
-                stl_bytes,
-                None,
-                None,
-                LoadPurpose::SeedRotaryHelicalFlute,
-                t0,
-            );
-            let _ = tx.send(res);
-            egui_ctx.request_repaint();
-        });
-    }
-
-    pub(crate) fn spawn_sample_plate_load(&mut self, egui_ctx: egui::Context) {
-        let generation = self.begin_model_load_generation();
-        self.logs
-            .push("Generating & tessellating sample CNC mounting plate STEP model…".to_string());
-        let tx = self.job_tx.clone();
-        rayon::spawn(move || {
-            let t0 = Instant::now();
-            let res = match sample_machined_plate_step() {
-                Ok(step_str) => parse_step_bytes_job(
+            let res = match sample_id.generate_asset_bytes() {
+                Ok(Some(bytes)) => {
+                    if spec.asset_kind.is_3d_mesh() {
+                        parse_model_bytes_job(
+                            generation,
+                            spec.default_filename.to_string(),
+                            bytes,
+                            None,
+                            None,
+                            purpose,
+                            t0,
+                        )
+                    } else {
+                        parse_step_bytes_job(
+                            generation,
+                            spec.default_filename.to_string(),
+                            bytes,
+                            None,
+                            purpose,
+                            t0,
+                        )
+                    }
+                }
+                Ok(None) => LoadJobResult::Failed {
                     generation,
-                    "sample_machined_plate.step".to_string(),
-                    step_str.into_bytes(),
-                    None,
-                    LoadPurpose::SeedBlankSample,
-                    t0,
-                ),
+                    error: format!(
+                        "sample '{}' has no 3D CAD asset to load",
+                        spec.canonical_slug
+                    ),
+                },
                 Err(e) => LoadJobResult::Failed {
                     generation,
                     error: e.to_string(),
@@ -136,6 +69,82 @@ impl ChipCutterApp {
             let _ = tx.send(res);
             egui_ctx.request_repaint();
         });
+    }
+
+    /// Loads any pure-2D / procedural sample registered in [`chip_demos::SampleCatalog`].
+    pub(crate) fn load_catalog_pure2d_demo(
+        &mut self,
+        sample_id: SampleId,
+        egui_ctx: &egui::Context,
+    ) {
+        let spec = sample_id.spec();
+        self.prepare_for_project_replacement(None, None);
+        self.project_file_path = None;
+        self.project.machine_id = None;
+        self.sync_active_machine_tools();
+        if let Ok(proj) = sample_id.build_project(&SampleBuildContext {
+            doc: None,
+            topo: None,
+            asset_path: None,
+            sha256_hex: "",
+            available_tools: &self.global_tools.tools,
+            empty_project: false,
+        }) {
+            self.project = proj;
+        }
+        self.sync_active_machine_tools();
+        match spec.focus_hint {
+            SampleFocusHint::Operation {
+                op_idx,
+                geometry_tab,
+            } => {
+                self.inspector_focus = InspectorFocus::Operation {
+                    setup_idx: 0,
+                    op_idx,
+                };
+                self.op_tab = if geometry_tab {
+                    OperationTab::Geometry
+                } else {
+                    OperationTab::Passes
+                };
+            }
+            SampleFocusHint::SketchEntity {
+                sketch_idx,
+                entity_idx,
+            } => {
+                self.inspector_focus = InspectorFocus::Sketch { sketch_idx };
+                self.selected_sketch_entity_idx = Some(entity_idx);
+            }
+            _ => {}
+        }
+        self.refresh_dependent_expressions();
+        self.fit_scene_to_viewport();
+        self.logs.push(spec.load_status_message.to_string());
+        self.auto_sim_after_gen = spec.auto_generate_and_sim;
+        if spec.auto_generate_and_sim {
+            self.trigger_generate_dirty(None, None);
+        }
+        egui_ctx.request_repaint();
+    }
+
+    pub(crate) fn spawn_sculpted_mesh_dome_load(&mut self, egui_ctx: egui::Context) {
+        self.spawn_catalog_sample_load(SampleId::SculptedMeshDome, true, egui_ctx);
+    }
+
+    pub(crate) fn spawn_relief_wave_mesh_load(&mut self, egui_ctx: egui::Context) {
+        self.spawn_catalog_sample_load(SampleId::ReliefWaveMesh, true, egui_ctx);
+    }
+
+    pub(crate) fn spawn_rotary_shaft_load(&mut self, egui_ctx: egui::Context) {
+        self.spawn_catalog_sample_load(SampleId::RotaryIndexedShaft, true, egui_ctx);
+    }
+
+    pub(crate) fn spawn_rotary_helical_flute_load(&mut self, egui_ctx: egui::Context) {
+        self.spawn_catalog_sample_load(SampleId::RotaryHelicalFlute, true, egui_ctx);
+    }
+
+    pub(crate) fn spawn_sample_plate_load(&mut self, egui_ctx: egui::Context) {
+        self.spawn_catalog_sample_load(SampleId::MachinedPlate, false, egui_ctx);
     }
 
     pub(crate) fn spawn_multi_feature_sample_load(
@@ -144,42 +153,12 @@ impl ChipCutterApp {
         seed_demo_ops: bool,
         egui_ctx: egui::Context,
     ) {
-        let generation = self.begin_model_load_generation();
-        self.logs.push(format!(
-            "Generating Milestone 2 multi-feature bracket STEP fixture (tilted={tilted})…"
-        ));
-        let tx = self.job_tx.clone();
-        rayon::spawn(move || {
-            let t0 = Instant::now();
-            let res = match sample_multi_feature_bracket_step(tilted) {
-                Ok(step_str) => {
-                    let name = if tilted {
-                        "sample_multi_feature_tilted.step"
-                    } else {
-                        "sample_multi_feature_bracket.step"
-                    };
-                    let purpose = if seed_demo_ops {
-                        LoadPurpose::SeedMultiFeatureBracket
-                    } else {
-                        LoadPurpose::SeedBlankSample
-                    };
-                    parse_step_bytes_job(
-                        generation,
-                        name.to_string(),
-                        step_str.into_bytes(),
-                        None,
-                        purpose,
-                        t0,
-                    )
-                }
-                Err(e) => LoadJobResult::Failed {
-                    generation,
-                    error: e.to_string(),
-                },
-            };
-            let _ = tx.send(res);
-            egui_ctx.request_repaint();
-        });
+        let id = if tilted {
+            SampleId::MultiFeatureBracketTilted
+        } else {
+            SampleId::MultiFeatureBracket
+        };
+        self.spawn_catalog_sample_load(id, seed_demo_ops, egui_ctx);
     }
 
     pub(crate) fn spawn_cam_torture_sample_load(
@@ -187,447 +166,71 @@ impl ChipCutterApp {
         seed_demo_ops: bool,
         egui_ctx: egui::Context,
     ) {
-        let generation = self.begin_model_load_generation();
-        self.logs.push(
-            "Generating Milestone 3 CAM Torture Block STEP fixture (island pocket, open step, Ø18 bore, 45° bevel)…"
-                .to_string(),
-        );
-        let tx = self.job_tx.clone();
-        rayon::spawn(move || {
-            let t0 = Instant::now();
-            let res = match sample_cam_torture_block_step() {
-                Ok(step_str) => {
-                    let purpose = if seed_demo_ops {
-                        LoadPurpose::SeedCamTortureBlock
-                    } else {
-                        LoadPurpose::SeedBlankSample
-                    };
-                    parse_step_bytes_job(
-                        generation,
-                        "sample_cam_torture_block.step".to_string(),
-                        step_str.into_bytes(),
-                        None,
-                        purpose,
-                        t0,
-                    )
-                }
-                Err(e) => LoadJobResult::Failed {
-                    generation,
-                    error: e.to_string(),
-                },
-            };
-            let _ = tx.send(res);
-            egui_ctx.request_repaint();
-        });
+        self.spawn_catalog_sample_load(SampleId::CamTortureBlock, seed_demo_ops, egui_ctx);
     }
 
     pub(crate) fn spawn_adaptive_rest_demo_load(&mut self, egui_ctx: egui::Context) {
-        let generation = self.begin_model_load_generation();
-        self.logs
-            .push("Generating Milestone 6 2D Adaptive + Rest Machining STEP job…".to_string());
-        let tx = self.job_tx.clone();
-        rayon::spawn(move || {
-            let t0 = Instant::now();
-            let res = match sample_cam_torture_block_step() {
-                Ok(step_str) => parse_step_bytes_job(
-                    generation,
-                    "sample_cam_torture_block.step".to_string(),
-                    step_str.into_bytes(),
-                    None,
-                    LoadPurpose::SeedAdaptiveRestDemo,
-                    t0,
-                ),
-                Err(e) => LoadJobResult::Failed {
-                    generation,
-                    error: e.to_string(),
-                },
-            };
-            let _ = tx.send(res);
-            egui_ctx.request_repaint();
-        });
+        self.spawn_catalog_sample_load(SampleId::AdaptiveRestDemo, true, egui_ctx);
     }
 
     pub(crate) fn spawn_two_sided_vise_load(&mut self, egui_ctx: egui::Context) {
-        let generation = self.begin_model_load_generation();
-        self.logs.push(
-            "Generating Two-Sided Vise & Soft-Jaw Workholding sample (Setup 1 G54 Vise + Toe Clamps -> Setup 2 G55 Flip Carryover)…".to_string(),
-        );
-        let tx = self.job_tx.clone();
-        rayon::spawn(move || {
-            let t0 = Instant::now();
-            let stl_bytes = sample_two_sided_vise_part_stl_bytes();
-            let res = parse_model_bytes_job(
-                generation,
-                "two_sided_vise_bracket.stl".to_string(),
-                stl_bytes,
-                None,
-                None,
-                LoadPurpose::SeedTwoSidedViseWorkholding,
-                t0,
-            );
-            let _ = tx.send(res);
-            egui_ctx.request_repaint();
-        });
+        self.spawn_catalog_sample_load(SampleId::TwoSidedViseWorkholding, true, egui_ctx);
     }
 
     pub(crate) fn spawn_undercut_deburr_load(&mut self, egui_ctx: egui::Context) {
-        let generation = self.begin_model_load_generation();
-        self.logs.push(
-            "Generating Undercut & 3D Deburr Block STEP fixture (M8 T-Slot, 60° Dovetail, Lollipop Overhang, & 3D Deburr)…"
-                .to_string(),
-        );
-        let tx = self.job_tx.clone();
-        rayon::spawn(move || {
-            let t0 = Instant::now();
-            let res = match sample_undercut_deburr_block_step_bytes() {
-                Ok(step_bytes) => parse_step_bytes_job(
-                    generation,
-                    "sample_undercut_deburr_block.step".to_string(),
-                    step_bytes,
-                    None,
-                    LoadPurpose::SeedUndercutAndDeburrBlock,
-                    t0,
-                ),
-                Err(e) => LoadJobResult::Failed {
-                    generation,
-                    error: e.to_string(),
-                },
-            };
-            let _ = tx.send(res);
-            egui_ctx.request_repaint();
-        });
+        self.spawn_catalog_sample_load(SampleId::UndercutAndDeburrBlock, true, egui_ctx);
     }
 
     pub(crate) fn spawn_feed_opt_pocket_load(&mut self, egui_ctx: egui::Context) {
-        let generation = self.begin_model_load_generation();
-        self.logs.push(
-            "Generating Feed-Optimized Adaptive Pocket STEP fixture (sharp corners + Ø16 mm boss)…"
-                .to_string(),
-        );
-        let tx = self.job_tx.clone();
-        rayon::spawn(move || {
-            let t0 = Instant::now();
-            let res = match tutorial_adaptive_pocket_step() {
-                Ok(step_str) => parse_step_bytes_job(
-                    generation,
-                    "20-feed-opt-pocket.step".to_string(),
-                    step_str.into_bytes(),
-                    None,
-                    LoadPurpose::SeedFeedOptPocket,
-                    t0,
-                ),
-                Err(e) => LoadJobResult::Failed {
-                    generation,
-                    error: e.to_string(),
-                },
-            };
-            let _ = tx.send(res);
-            egui_ctx.request_repaint();
-        });
+        self.spawn_catalog_sample_load(SampleId::FeedOptPocket, true, egui_ctx);
     }
 
     pub(crate) fn spawn_flip_jig_softjaws_load(&mut self, egui_ctx: egui::Context) {
-        let generation = self.begin_model_load_generation();
-        self.logs.push(
-            "Generating Flip-Jig Dowel Pins & Auto Soft-Jaw Setup sample (Spoilboard + G54/G55/G56)…"
-                .to_string(),
-        );
-        let tx = self.job_tx.clone();
-        rayon::spawn(move || {
-            let t0 = Instant::now();
-            let res = match tutorial_contour_plate_step() {
-                Ok(step_str) => parse_step_bytes_job(
-                    generation,
-                    "02-contour-plate.step".to_string(),
-                    step_str.into_bytes(),
-                    None,
-                    LoadPurpose::SeedFlipJigSoftJaws,
-                    t0,
-                ),
-                Err(e) => LoadJobResult::Failed {
-                    generation,
-                    error: e.to_string(),
-                },
-            };
-            let _ = tx.send(res);
-            egui_ctx.request_repaint();
-        });
+        self.spawn_catalog_sample_load(SampleId::FlipJigSoftJaws, true, egui_ctx);
     }
 
     pub(crate) fn spawn_curved_deburr_3d_load(&mut self, egui_ctx: egui::Context) {
-        let generation = self.begin_model_load_generation();
-        self.logs.push(
-            "Generating 3D Curved Arch & Underside Deburring STEP fixture (ChamferMill, BallEndmill, Lollipop)…"
-                .to_string(),
-        );
-        let tx = self.job_tx.clone();
-        rayon::spawn(move || {
-            let t0 = Instant::now();
-            let res = match sample_curved_deburr_overhang_step_bytes() {
-                Ok(step_bytes) => parse_step_bytes_job(
-                    generation,
-                    "sample_curved_deburr_overhang.step".to_string(),
-                    step_bytes,
-                    None,
-                    LoadPurpose::SeedCurvedDeburr3D,
-                    t0,
-                ),
-                Err(e) => LoadJobResult::Failed {
-                    generation,
-                    error: e.to_string(),
-                },
-            };
-            let _ = tx.send(res);
-            egui_ctx.request_repaint();
-        });
+        self.spawn_catalog_sample_load(SampleId::CurvedDeburr3D, true, egui_ctx);
     }
 
     pub(crate) fn spawn_dovetail_rail_keyway_load(&mut self, egui_ctx: egui::Context) {
-        let generation = self.begin_model_load_generation();
-        self.logs.push(
-            "Generating External 60° Dovetail Rail & Blind Entry-Bore Keyway STEP fixture…"
-                .to_string(),
-        );
-        let tx = self.job_tx.clone();
-        rayon::spawn(move || {
-            let t0 = Instant::now();
-            let res = match sample_dovetail_rail_keyway_step_bytes() {
-                Ok(step_bytes) => parse_step_bytes_job(
-                    generation,
-                    "sample_dovetail_rail_keyway.step".to_string(),
-                    step_bytes,
-                    None,
-                    LoadPurpose::SeedDovetailRailKeyway,
-                    t0,
-                ),
-                Err(e) => LoadJobResult::Failed {
-                    generation,
-                    error: e.to_string(),
-                },
-            };
-            let _ = tx.send(res);
-            egui_ctx.request_repaint();
-        });
+        self.spawn_catalog_sample_load(SampleId::DovetailRailKeyway, true, egui_ctx);
     }
 
     pub(crate) fn spawn_mesh_3mf_bracket_load(&mut self, egui_ctx: egui::Context) {
-        let generation = self.begin_model_load_generation();
-        self.logs
-            .push("Generating Sculpted Mount Bracket (.3mf unit-aware mesh) sample…".to_string());
-        let tx = self.job_tx.clone();
-        rayon::spawn(move || {
-            let t0 = Instant::now();
-            let mf_bytes = sample_sculpted_mount_3mf_bytes();
-            let res = parse_model_bytes_job(
-                generation,
-                "08-bracket.3mf".to_string(),
-                mf_bytes,
-                None,
-                None,
-                LoadPurpose::SeedMesh3mfBracket,
-                t0,
-            );
-            let _ = tx.send(res);
-            egui_ctx.request_repaint();
-        });
+        self.spawn_catalog_sample_load(SampleId::Mesh3mfBracket, true, egui_ctx);
     }
 
     pub(crate) fn spawn_keepout_clamps_load(&mut self, egui_ctx: egui::Context) {
-        let generation = self.begin_model_load_generation();
-        self.logs.push(
-            "Generating Clamp & Boss Keep-Out Plate STEP fixture (Shared Avoid Region + Toe Clamps + Boss Keep-Out)…"
-                .to_string(),
-        );
-        let tx = self.job_tx.clone();
-        rayon::spawn(move || {
-            let t0 = Instant::now();
-            let res = match sample_keepout_clamp_plate_step_bytes() {
-                Ok(step_bytes) => parse_step_bytes_job(
-                    generation,
-                    "sample_keepout_clamp_plate.step".to_string(),
-                    step_bytes,
-                    None,
-                    LoadPurpose::SeedKeepOutClamps,
-                    t0,
-                ),
-                Err(e) => LoadJobResult::Failed {
-                    generation,
-                    error: e.to_string(),
-                },
-            };
-            let _ = tx.send(res);
-            egui_ctx.request_repaint();
-        });
+        self.spawn_catalog_sample_load(SampleId::KeepOutClamps, true, egui_ctx);
     }
 
     pub(crate) fn spawn_indexed_model_bounds_load(&mut self, egui_ctx: egui::Context) {
-        let generation = self.begin_model_load_generation();
-        self.logs.push(
-            "Generating Indexed 4-Sided Bar STEP fixture (Fixed-Box Center-Z + Model Bounds & Auto-Rotate 3+1)…"
-                .to_string(),
-        );
-        let tx = self.job_tx.clone();
-        rayon::spawn(move || {
-            let t0 = Instant::now();
-            let res = match sample_indexed_4sided_bar_step_bytes() {
-                Ok(step_bytes) => parse_step_bytes_job(
-                    generation,
-                    "sample_indexed_4sided_bar.step".to_string(),
-                    step_bytes,
-                    None,
-                    LoadPurpose::SeedIndexedModelBounds,
-                    t0,
-                ),
-                Err(e) => LoadJobResult::Failed {
-                    generation,
-                    error: e.to_string(),
-                },
-            };
-            let _ = tx.send(res);
-            egui_ctx.request_repaint();
-        });
+        self.spawn_catalog_sample_load(SampleId::IndexedModelBounds, true, egui_ctx);
     }
 
     pub fn load_svg_badge_sign_demo(&mut self, egui_ctx: &egui::Context) {
-        self.prepare_for_project_replacement(None, None);
-        self.project_file_path = None;
-        self.project.machine_id = None;
-        self.sync_active_machine_tools();
-        self.project = build_svg_badge_sign_project(None, &self.global_tools.tools);
-        self.sync_active_machine_tools();
-        self.inspector_focus = InspectorFocus::Operation {
-            setup_idx: 0,
-            op_idx: 0,
-        };
-        self.op_tab = OperationTab::Geometry;
-        self.refresh_dependent_expressions();
-        self.fit_scene_to_viewport();
-        self.logs.push(
-            "Loaded Pure-2D SVG Badge Sign (96 DPI cubic Bézier biarcs — Emblem Pocket + Island, V-Carve Accents, Outer Contour + Tabs)."
-                .to_string(),
-        );
-        self.auto_sim_after_gen = true;
-        self.trigger_generate_dirty(None, None);
-        egui_ctx.request_repaint();
+        self.load_catalog_pure2d_demo(SampleId::SvgBadgeSign, egui_ctx);
     }
 
     pub(crate) fn spawn_thread_mill_manifold_load(&mut self, egui_ctx: egui::Context) {
-        let generation = self.begin_model_load_generation();
-        self.logs.push(
-            "Generating Threaded Manifold Block STEP fixture (M8×1.25, 1/4-20 UNC, External M12×1.75)…"
-                .to_string(),
-        );
-        let tx = self.job_tx.clone();
-        rayon::spawn(move || {
-            let t0 = Instant::now();
-            let res = match sample_threaded_manifold_step() {
-                Ok(step_str) => parse_step_bytes_job(
-                    generation,
-                    "18-threaded-manifold.step".to_string(),
-                    step_str.into_bytes(),
-                    None,
-                    LoadPurpose::SeedThreadMillManifold,
-                    t0,
-                ),
-                Err(e) => LoadJobResult::Failed {
-                    generation,
-                    error: e.to_string(),
-                },
-            };
-            let _ = tx.send(res);
-            egui_ctx.request_repaint();
-        });
+        self.spawn_catalog_sample_load(SampleId::ThreadMillManifold, true, egui_ctx);
     }
 
     pub fn load_rotary_wrapped_engraving_demo(&mut self, egui_ctx: &egui::Context) {
-        self.prepare_for_project_replacement(None, None);
-        self.project_file_path = None;
-        self.project.machine_id = None;
-        self.sync_active_machine_tools();
-        self.project = build_rotary_wrapped_engraving_project(&self.global_tools.tools);
-        self.sync_active_machine_tools();
-        self.inspector_focus = InspectorFocus::Operation {
-            setup_idx: 0,
-            op_idx: 0,
-        };
-        self.op_tab = OperationTab::Passes;
-        self.refresh_dependent_expressions();
-        self.fit_scene_to_viewport();
-        self.logs.push(
-            "Loaded Wrapped Rotary Engraving (Z+X+A — Ø40×80mm cylinder, wrapped 'CHIP' V-Carve + circumferential flute pocket)."
-                .to_string(),
-        );
-        self.auto_sim_after_gen = true;
-        self.trigger_generate_dirty(None, None);
-        egui_ctx.request_repaint();
+        self.load_catalog_pure2d_demo(SampleId::RotaryWrappedEngraving, egui_ctx);
     }
 
     pub fn load_pure2d_router_panel_demo(&mut self, egui_ctx: &egui::Context) {
-        self.prepare_for_project_replacement(None, None);
-        self.project_file_path = None;
-        self.project.machine_id = None;
-        self.sync_active_machine_tools();
-        self.project = build_pure2d_router_panel_demo_project(None, &self.global_tools.tools);
-        self.sync_active_machine_tools();
-        self.inspector_focus = InspectorFocus::Operation {
-            setup_idx: 0,
-            op_idx: 1,
-        };
-        self.op_tab = OperationTab::Geometry;
-        self.refresh_dependent_expressions();
-        self.fit_scene_to_viewport();
-        self.logs.push(
-            "Loaded Pure-2D CNC Router Front Panel (.dxf, zero STEP files — 4 operations: Holes, Island Pocket, Vent Slot, Outer Profile + Tabs)."
-                .to_string(),
-        );
-        self.auto_sim_after_gen = true;
-        self.trigger_generate_dirty(None, None);
-        egui_ctx.request_repaint();
+        self.load_catalog_pure2d_demo(SampleId::Pure2dRouterPanel, egui_ctx);
     }
 
     pub fn load_engraved_nameplate_demo(&mut self, egui_ctx: &egui::Context) {
-        self.prepare_for_project_replacement(None, None);
-        self.project_file_path = None;
-        self.project.machine_id = None;
-        self.sync_active_machine_tools();
-        self.project =
-            chip_project::build_engraved_nameplate_demo_project(&self.global_tools.tools);
-        self.sync_active_machine_tools();
-        self.inspector_focus = InspectorFocus::Sketch { sketch_idx: 0 };
-        self.selected_sketch_entity_idx = Some(3);
-        self.refresh_dependent_expressions();
-        self.fit_scene_to_viewport();
-        self.logs.push(
-            "Loaded Engraved Nameplate + Dual-Mode Typography Demo (Bolt Circle Drill, Ø22 Bore, DejaVuSans-Bold 'CHIP' Pocket, Hershey 1-Pass 'S/N 2026-08' Trace, R10 Plaque + Tabs)."
-                .to_string(),
-        );
-        self.auto_sim_after_gen = true;
-        self.trigger_generate_dirty(None, None);
-        egui_ctx.request_repaint();
+        self.load_catalog_pure2d_demo(SampleId::EngravedNameplate, egui_ctx);
     }
 
     pub fn load_vcarve_sign_demo(&mut self, egui_ctx: &egui::Context) {
-        self.prepare_for_project_replacement(None, None);
-        self.project_file_path = None;
-        self.project.machine_id = None;
-        self.sync_active_machine_tools();
-        self.project =
-            chip_project::build_vcarve_sign_and_inlay_demo_project(&self.global_tools.tools);
-        self.sync_active_machine_tools();
-        self.inspector_focus = InspectorFocus::Operation {
-            setup_idx: 0,
-            op_idx: 0,
-        };
-        self.op_tab = OperationTab::Passes;
-        self.refresh_dependent_expressions();
-        self.fit_scene_to_viewport();
-        self.logs.push(
-            "Loaded V-Carve Sign & Mated V-Inlay Plug Demo (Setup 1: Two-Stage Ø6mm + 60° V-Bit Crest & 'CHIP' + Medial 'CAM v2' + Plaque Tabs; Setup 2: Mirrored Male V-Inlay Plug)."
-                .to_string(),
-        );
-        self.auto_sim_after_gen = true;
-        self.trigger_generate_dirty(None, None);
-        egui_ctx.request_repaint();
+        self.load_catalog_pure2d_demo(SampleId::VCarveSignAndInlay, egui_ctx);
     }
 
     pub(crate) fn spawn_revision_demo_load(
@@ -693,7 +296,7 @@ impl ChipCutterApp {
                         (
                             "sample_revision_part_v1.step",
                             v1_str,
-                            LoadPurpose::SeedRevisionDemoV1,
+                            LoadPurpose::SeedSample(SampleId::RevisionDemoV1),
                         )
                     };
                     let mut job = parse_step_bytes_job(

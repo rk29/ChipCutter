@@ -981,11 +981,9 @@ pub fn render_offscreen_png(
 mod tests {
     use std::{collections::HashSet, sync::Arc};
 
-    use chip_cad::{
-        CadKernel, FaceId, MonstertruckKernel, PickTarget, sample_machined_plate_step,
-        sample_multi_feature_bracket_step,
-    };
+    use chip_cad::{CadKernel, FaceId, MonstertruckKernel, PickTarget};
     use chip_cam::{Setup, WorkOffsetSlot};
+    use chip_fixtures::{sample_machined_plate_step, sample_multi_feature_bracket_step};
     use chip_math::DEFAULT_TESS_CHORD_TOL_MM;
 
     use super::*;
@@ -1192,11 +1190,11 @@ mod tests {
     fn renders_instanced_toolpaths_and_holding_tab_markers() {
         use std::sync::atomic::AtomicBool;
 
-        use chip_cad::sample_cam_torture_block_step;
         use chip_cam::{
             HeightReference, HeightSpec, Operation, OperationKind, StrategyParams, TabProfileKind,
             generate_operation_toolpath,
         };
+        use chip_fixtures::sample_cam_torture_block_step;
         use chip_tools::default_starter_tool_library;
 
         let step = sample_cam_torture_block_step().unwrap();
@@ -1268,15 +1266,17 @@ mod tests {
     fn renders_pass_6_machined_stock_mesh_and_3d_cutter_assembly() {
         use std::sync::atomic::AtomicBool;
 
-        use chip_cad::{SurfaceKind, sample_cam_torture_block_step};
+        use crate::viewport::build_cutter_assembly_mesh;
+        use chip_cad::SurfaceKind;
         use chip_cam::{
             GeometrySelectionItem, Operation, OperationKind, generate_operation_toolpath,
         };
+        use chip_fixtures::sample_cam_torture_block_step;
         use chip_sim::{
             MachineKinematicsConfig, SetupSimulationInput, SimOperationInput, SimResolution,
-            SimVerificationConfig, build_cutter_assembly_mesh, run_setup_simulation,
-            tessellate_stock_mesh,
+            SimVerificationConfig, run_setup_simulation,
         };
+        use chip_stock::tessellate_stock_mesh;
         use chip_tools::default_starter_tool_library;
 
         let step = sample_cam_torture_block_step().unwrap();
@@ -1618,8 +1618,8 @@ mod tests {
         use chip_sim::{
             MachineKinematicsConfig, SetupSimulationInput, SimOperationInput, SimResolution,
             SimStockColorMode, SimVerificationConfig, run_setup_simulation,
-            tessellate_cylindrical_stock_mesh_colored,
         };
+        use chip_stock::tessellate_cylindrical_stock_mesh_colored;
         use chip_tools::default_starter_tool_library;
 
         let lib = default_starter_tool_library();
@@ -1859,6 +1859,7 @@ mod tests {
     #[cfg(feature = "gpu-compute")]
     #[test]
     fn gpu_grid_direct_render_matches_cpu_mesh_across_heightfield_cylindrical_and_tridexel() {
+        use crate::viewport::GpuStockRenderHandle;
         use chip_cad::CadDocument;
         use chip_cam::{
             AxisAnchor, BoxAnchor27, MotionRole, RotaryAxisKind, RotaryDriveMode, Setup, StockAxis,
@@ -1866,9 +1867,9 @@ mod tests {
         };
         use chip_math::{Aabb3, DMat4, DVec3, ParamLength};
         use chip_sim::{
-            GpuSimContext, GpuStockRenderHandle, MachineKinematicsConfig, SetupSimulationInput,
-            SimComputeBackendChoice, SimEngineKind, SimOperationInput, SimResolution,
-            SimStockColorMode, SimVerificationConfig, WgpuComputeBackend, run_setup_simulation,
+            GpuSimContext, MachineKinematicsConfig, SetupSimulationInput, SimComputeBackendChoice,
+            SimEngineKind, SimMeshOptions, SimOperationInput, SimResolution, SimStockColorMode,
+            SimVerificationConfig, WgpuComputeBackend, run_setup_simulation,
         };
         use chip_tools::default_starter_tool_library;
 
@@ -2009,7 +2010,11 @@ mod tests {
 
             let mut backend =
                 WgpuComputeBackend::new(Arc::clone(&ctx), sim.final_stock.clone(), None);
-            let gpu_handle = backend.capture_render_handle(SimStockColorMode::ByOperation);
+            let gpu_handle = GpuStockRenderHandle::from_buffer_snapshot(
+                &ctx,
+                &backend.capture_buffer_snapshot(),
+                SimMeshOptions::from(SimStockColorMode::ByOperation),
+            );
 
             let mut cam = CadCamera::default();
             cam.fit_aabb(&Aabb3::new(
@@ -2141,7 +2146,11 @@ mod tests {
 
             let mut backend =
                 WgpuComputeBackend::new(Arc::clone(&ctx), sim.final_stock.clone(), None);
-            let gpu_handle = backend.capture_render_handle(SimStockColorMode::ByOperation);
+            let gpu_handle = GpuStockRenderHandle::from_buffer_snapshot(
+                &ctx,
+                &backend.capture_buffer_snapshot(),
+                SimMeshOptions::from(SimStockColorMode::ByOperation),
+            );
 
             let mut cam = CadCamera::default();
             cam.fit_aabb(&Aabb3::new(
@@ -2263,7 +2272,11 @@ mod tests {
                 sim.final_stock.clone(),
                 sim.target_tridexel_stock.clone(),
             );
-            let gpu_handle = backend.capture_render_handle(SimStockColorMode::ByOperation);
+            let gpu_handle = GpuStockRenderHandle::from_buffer_snapshot(
+                &ctx,
+                &backend.capture_buffer_snapshot(),
+                SimMeshOptions::from(SimStockColorMode::ByOperation),
+            );
             let GpuStockRenderHandle::TriDexel(ref td_data) = *gpu_handle else {
                 panic!("expected TriDexel GPU render handle");
             };
@@ -2405,13 +2418,14 @@ mod tests {
     #[cfg(feature = "gpu-compute")]
     #[test]
     fn tridexel_ultra_gpu_renders_flat_top_z_surfaces_without_truncation() {
+        use crate::viewport::GpuStockRenderHandle;
         use chip_math::{Aabb3, DMat4, DVec3, RigidFrame3};
         use chip_sim::{
-            GpuSimContext, GpuStockRenderHandle, RadialCutterProfile, SimResolution,
-            SimStockBackend, SimStockColorMode, SimulatedStock, StockShapeSpec,
-            StockVerifyTolerances, SweepChord, SweepMotion, SweepToolSpec, TriDexelStock,
-            WgpuComputeBackend, tessellate_tridexel_stock_mesh_colored,
+            GpuSimContext, RadialCutterProfile, SimMeshOptions, SimResolution, SimStockBackend,
+            SimStockColorMode, SimulatedStock, StockShapeSpec, StockVerifyTolerances, SweepChord,
+            SweepMotion, SweepToolSpec, TriDexelStock, WgpuComputeBackend,
         };
+        use chip_stock::tessellate_tridexel_stock_mesh_colored;
         use chip_tools::default_starter_tool_library;
 
         use crate::camera::StandardView;
@@ -2467,7 +2481,11 @@ mod tests {
             None,
         );
         let _ = backend.sweep_batch(&chords, &[tool_spec], false);
-        let gpu_handle = backend.capture_render_handle(SimStockColorMode::ByOperation);
+        let gpu_handle = GpuStockRenderHandle::from_buffer_snapshot(
+            &ctx,
+            &backend.capture_buffer_snapshot(),
+            SimMeshOptions::from(SimStockColorMode::ByOperation),
+        );
         let GpuStockRenderHandle::TriDexel(ref td_render) = *gpu_handle else {
             panic!("expected TriDexel GPU render handle");
         };
@@ -2559,13 +2577,14 @@ mod tests {
     #[cfg(feature = "gpu-compute")]
     #[test]
     fn tridexel_curved_cylinder_gpu_matches_cpu_surface_nets_without_ribbon_stripes() {
+        use crate::viewport::GpuStockRenderHandle;
         use chip_math::{Aabb3, DMat4, DVec3, RigidFrame3};
         use chip_sim::{
-            Axis3, GpuSimContext, RotaryStockSpec, SimResolution, SimStockBackend,
+            Axis3, GpuSimContext, RotaryStockSpec, SimMeshOptions, SimResolution, SimStockBackend,
             SimStockColorMode, SimulatedStock, StockShapeSpec, StockVerifyTolerances, SweepChord,
             SweepMotion, SweepToolSpec, TriDexelStock, WgpuComputeBackend,
-            tessellate_tridexel_stock_mesh_colored,
         };
+        use chip_stock::tessellate_tridexel_stock_mesh_colored;
         use chip_tools::default_starter_tool_library;
 
         use crate::camera::StandardView;
@@ -2628,7 +2647,11 @@ mod tests {
             None,
         );
         let _ = backend.sweep_batch(&chords, &[tool_spec], false);
-        let gpu_handle = backend.capture_render_handle(SimStockColorMode::ByOperation);
+        let gpu_handle = GpuStockRenderHandle::from_buffer_snapshot(
+            &ctx,
+            &backend.capture_buffer_snapshot(),
+            SimMeshOptions::from(SimStockColorMode::ByOperation),
+        );
         let (SimulatedStock::TriDexel(td_cpu), _) = backend.into_parts() else {
             panic!("expected TriDexel stock");
         };
@@ -2716,7 +2739,7 @@ mod tests {
 
         // Also verify Smooth Skinned mode (`mesh_skinning = true`) renders cleanly on both CPU & GPU
         // and matches between CPU and GPU pipelines!
-        let cpu_mesh_skin = Arc::new(chip_sim::tessellate_tridexel_stock_mesh_with_options(
+        let cpu_mesh_skin = Arc::new(chip_stock::tessellate_tridexel_stock_mesh_with_options(
             &td_cpu,
             None,
             chip_sim::SimMeshOptions::new(SimStockColorMode::ByOperation, true),
@@ -2802,7 +2825,7 @@ mod tests {
                     mesh_skinning: skin,
                 })
             } else {
-                let m = Arc::new(chip_sim::tessellate_tridexel_stock_mesh_with_options(
+                let m = Arc::new(chip_stock::tessellate_tridexel_stock_mesh_with_options(
                     &td_cpu,
                     None,
                     chip_sim::SimMeshOptions::new(SimStockColorMode::ByOperation, skin),

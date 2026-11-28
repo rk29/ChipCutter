@@ -14,10 +14,11 @@ use chip_cam::{
     OperationStatus, Setup, SharedAvoidRegion, UpstreamSweptInput,
     generate_operation_toolpath_with_fixtures, normalize_indexed_angle_deg, resolve_setup_fixtures,
 };
+use chip_machines::resolve_machine_definition;
 use chip_math::DisplayUnit;
 use chip_sim::{SimComputeBackendChoice, TriDexelStock};
 use chip_sketch::SketchLayer;
-use chip_tools::{Tool, resolve_machine_definition};
+use chip_tools::Tool;
 use crossbeam_channel::{Receiver, Sender};
 use rayon::prelude::*;
 

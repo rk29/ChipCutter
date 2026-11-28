@@ -657,10 +657,9 @@ pub fn show_model_inspector(ui: &mut egui::Ui, ctx: ModelInspectorCtx<'_>) -> Mo
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use chip_cad::{
-        MeshImportOptions, MeshUnitKind, load_mesh_cad_document, sample_sculpted_dome_stl_bytes,
-    };
+    use chip_cad::{MeshImportOptions, MeshUnitKind, load_mesh_cad_document};
     use chip_cam::{Operation, OperationKind, OperationStatus};
+    use chip_fixtures::sample_sculpted_dome_stl_bytes;
     use chip_project::{ModelEntry, ModelRole, ProjectDocument, UndoHistory};
 
     use crate::panels::{

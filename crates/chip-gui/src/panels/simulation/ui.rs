@@ -86,7 +86,7 @@ impl SimulationPanelState {
                             format!(
                                 "Engine: {} · Detail: {} · Surface: {}\nActive backend: GPU Compute ({}) — {}\n{}\n\nClick to configure Simulation Engine, Detail Level, Backend, and Mesh Skinning in Application Settings.",
                                 self.engine.label(),
-                                self.resolution.label_for_engine(self.engine),
+                                super::sim_resolution_label_for_engine(self.resolution, self.engine),
                                 skin_short,
                                 res.active_backend.backend_api,
                                 res.active_backend.adapter_name,
@@ -102,7 +102,7 @@ impl SimulationPanelState {
                             format!(
                                 "Engine: {} · Detail: {} · Surface: {}\nActive backend: CPU Exact (Rayon)\n{}\n\nClick to configure Simulation settings.",
                                 self.engine.label(),
-                                self.resolution.label_for_engine(self.engine),
+                                super::sim_resolution_label_for_engine(self.resolution, self.engine),
                                 skin_short,
                                 timing_line
                             ),
@@ -116,7 +116,7 @@ impl SimulationPanelState {
                             format!(
                                 "Engine: {} · Detail: {} · Surface: {}\nActive backend: CPU Fallback (Rayon)\n{}\n\nClick to configure Simulation settings.",
                                 self.engine.label(),
-                                self.resolution.label_for_engine(self.engine),
+                                super::sim_resolution_label_for_engine(self.resolution, self.engine),
                                 skin_short,
                                 timing_line
                             ),
@@ -131,7 +131,7 @@ impl SimulationPanelState {
                         format!(
                             "Engine: {} · Detail: {} · Surface: {}\nConfigured backend: CPU Exact (Rayon)\n\nClick to configure Simulation settings.",
                             self.engine.label(),
-                            self.resolution.label_for_engine(self.engine),
+                            super::sim_resolution_label_for_engine(self.resolution, self.engine),
                             skin_short,
                         ),
                     )
@@ -145,7 +145,7 @@ impl SimulationPanelState {
                         format!(
                             "Engine: {} · Detail: {} · Surface: {}\nGPU Compute adapter ready ({}) — {}\n\nClick to configure Simulation settings.",
                             self.engine.label(),
-                            self.resolution.label_for_engine(self.engine),
+                            super::sim_resolution_label_for_engine(self.resolution, self.engine),
                             skin_short,
                             info.backend_api,
                             info.adapter_name
@@ -160,7 +160,7 @@ impl SimulationPanelState {
                         format!(
                             "Engine: {} · Detail: {} · Surface: {}\nNo GPU compute adapter active; CPU + Rayon fallback.\n\nClick to configure Simulation settings.",
                             self.engine.label(),
-                            self.resolution.label_for_engine(self.engine),
+                            super::sim_resolution_label_for_engine(self.resolution, self.engine),
                             skin_short,
                         ),
                     )
@@ -1010,11 +1010,11 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    use chip_cad::sample_sculpted_dome_stl_bytes;
     use chip_cam::{
         BoxAnchor27, MotionRole, Operation, OperationKind, Setup, StockConfig, ToolpathBuilder,
         WcsOriginMode, WorkOffsetSlot,
     };
+    use chip_fixtures::sample_sculpted_dome_stl_bytes;
     use chip_math::{DVec3, DisplayUnit, ParamLength};
     use chip_project::{ProjectDocument, ToolpathCache, compute_operation_input_hash};
     use chip_sim::{

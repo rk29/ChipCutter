@@ -1,0 +1,1009 @@
+use std::{f64::consts::PI, io::Write as _};
+
+use chip_math::{DVec3, encode_binary_stl};
+use zip::{CompressionMethod, DateTime, System, ZipWriter, write::SimpleFileOptions};
+
+/// Generates a deterministic, 100% watertight binary STL of a **Sculpted Hemispherical Dome**
+/// (`R = 25.0 mm` hemisphere centered at `(0, 0, 8.0)`) seamlessly stitched onto a `70 × 70 × 8 mm`
+/// square base pedestal (`X, Y ∈ [-35, 35]`, `Z ∈ [0, 33]`).
+///
+/// Serves both as the Phase 5 `Sculpted Dome (STL Mesh)` sample part and as an analytical
+/// ground-truth oracle for Drop-Cutter and Push-Cutter surface contact tests.
+pub fn sample_sculpted_dome_stl_bytes() -> Vec<u8> {
+    let n_theta: usize = 96; // multiple of 4 so 4 square corners are hit exactly
+    let n_phi: usize = 32;
+    let radius = 25.0f64;
+    let base_h = 8.0f64;
+    let half_w = 35.0f64;
+
+    let mut tris: Vec<[DVec3; 3]> = Vec::with_capacity(n_theta * (2 * n_phi + 5));
+
+    // Precompute latitude rings `j = 0..n_phi` (j=0 is equator at z=base_h, j=n_phi is apex)
+    let mut rings: Vec<Vec<DVec3>> = Vec::with_capacity(n_phi);
+    for j in 0..n_phi {
+        let phi = (j as f64 / n_phi as f64) * (0.5 * PI);
+        let r = radius * phi.cos();
+        let z = base_h + radius * phi.sin();
+        let mut ring = Vec::with_capacity(n_theta);
+        for k in 0..n_theta {
+            let theta = (k as f64 / n_theta as f64) * (2.0 * PI);
+            ring.push(DVec3::new(r * theta.cos(), r * theta.sin(), z));
+        }
+        rings.push(ring);
+    }
+    let apex = DVec3::new(0.0, 0.0, base_h + radius);
+
+    // 1. Hemisphere lateral quads + apex cap
+    for j in 0..(n_phi - 1) {
+        for k in 0..n_theta {
+            let kn = (k + 1) % n_theta;
+            let a = rings[j][k];
+            let b = rings[j][kn];
+            let c = rings[j + 1][kn];
+            let d = rings[j + 1][k];
+            tris.push([a, b, c]);
+            tris.push([a, c, d]);
+        }
+    }
+    let top_ring = &rings[n_phi - 1];
+    for k in 0..n_theta {
+        let kn = (k + 1) % n_theta;
+        tris.push([top_ring[k], top_ring[kn], apex]);
+    }
+
+    // 2. Square top/bottom border rings projected along exact rays `theta`
+    let mut sq_top = Vec::with_capacity(n_theta);
+    let mut sq_bot = Vec::with_capacity(n_theta);
+    for k in 0..n_theta {
+        let theta = (k as f64 / n_theta as f64) * (2.0 * PI);
+        let c = theta.cos();
+        let s = theta.sin();
+        let denom = c.abs().max(s.abs());
+        let scale = half_w / denom;
+        let x = scale * c;
+        let y = scale * s;
+        sq_top.push(DVec3::new(x, y, base_h));
+        sq_bot.push(DVec3::new(x, y, 0.0));
+    }
+
+    // 3. Flat pedestal top flange (`Z = base_h`, outward normal `+Z`)
+    let equator = &rings[0];
+    for k in 0..n_theta {
+        let kn = (k + 1) % n_theta;
+        let c0 = equator[k];
+        let c1 = equator[kn];
+        let s0 = sq_top[k];
+        let s1 = sq_top[kn];
+        tris.push([c0, s0, s1]);
+        tris.push([c0, s1, c1]);
+    }
+
+    // 4. Vertical pedestal walls (`Z = 0..base_h`, outward horizontal normals)
+    for k in 0..n_theta {
+        let kn = (k + 1) % n_theta;
+        let t0 = sq_top[k];
+        let t1 = sq_top[kn];
+        let b0 = sq_bot[k];
+        let b1 = sq_bot[kn];
+        tris.push([b0, b1, t1]);
+        tris.push([b0, t1, t0]);
+    }
+
+    // 5. Flat pedestal bottom face (`Z = 0`, outward normal `-Z`)
+    let bot_center = DVec3::ZERO;
+    for k in 0..n_theta {
+        let kn = (k + 1) % n_theta;
+        tris.push([bot_center, sq_bot[kn], sq_bot[k]]);
+    }
+
+    encode_binary_stl("ChipCutter Sculpted Dome (R=25mm on 70x70x8mm base)", &tris)
+}
+
+/// Generates a deterministic, watertight Wavefront `.obj` sinusoidal wave relief
+/// (`80 × 60 × 15 mm`, `X ∈ [0, 80]`, `Y ∈ [0, 60]`, `Z ∈ [0, 15]`) using quad faces.
+pub fn sample_relief_wave_obj_text() -> String {
+    let nx: usize = 32;
+    let ny: usize = 24;
+    let w = 80.0f64;
+    let h = 60.0f64;
+    let base_z = 9.0f64;
+    let amp_z = 3.0f64;
+
+    let mut out = String::new();
+    out.push_str("# ChipCutter Sample Sinusoidal Relief Wave\n");
+    out.push_str("# units: mm\n");
+    out.push_str("o relief_wave\n");
+
+    let top_idx = |i: usize, j: usize| -> usize { 1 + j * (nx + 1) + i };
+    let bot_offset = (nx + 1) * (ny + 1);
+    let bot_idx = |i: usize, j: usize| -> usize { 1 + bot_offset + j * (nx + 1) + i };
+
+    // Top surface vertices
+    for j in 0..=ny {
+        let y = (j as f64 / ny as f64) * h;
+        for i in 0..=nx {
+            let x = (i as f64 / nx as f64) * w;
+            let z = base_z
+                + amp_z * ((x / w) * 2.0 * PI).sin()
+                + (0.5 * amp_z) * ((y / h) * 2.0 * PI).cos();
+            out.push_str(&format!("v {x:.6} {y:.6} {z:.6}\n"));
+        }
+    }
+    // Bottom surface vertices (`z = 0`)
+    for j in 0..=ny {
+        let y = (j as f64 / ny as f64) * h;
+        for i in 0..=nx {
+            let x = (i as f64 / nx as f64) * w;
+            out.push_str(&format!("v {x:.6} {y:.6} 0.000000\n"));
+        }
+    }
+
+    // Top quads (+Z outward)
+    for j in 0..ny {
+        for i in 0..nx {
+            out.push_str(&format!(
+                "f {} {} {} {}\n",
+                top_idx(i, j),
+                top_idx(i + 1, j),
+                top_idx(i + 1, j + 1),
+                top_idx(i, j + 1)
+            ));
+        }
+    }
+    // Bottom quads (-Z outward)
+    for j in 0..ny {
+        for i in 0..nx {
+            out.push_str(&format!(
+                "f {} {} {} {}\n",
+                bot_idx(i, j),
+                bot_idx(i, j + 1),
+                bot_idx(i + 1, j + 1),
+                bot_idx(i + 1, j)
+            ));
+        }
+    }
+    // Front wall (`j = 0`, -Y outward)
+    for i in 0..nx {
+        out.push_str(&format!(
+            "f {} {} {} {}\n",
+            bot_idx(i, 0),
+            bot_idx(i + 1, 0),
+            top_idx(i + 1, 0),
+            top_idx(i, 0)
+        ));
+    }
+    // Back wall (`j = ny`, +Y outward)
+    for i in 0..nx {
+        out.push_str(&format!(
+            "f {} {} {} {}\n",
+            bot_idx(i + 1, ny),
+            bot_idx(i, ny),
+            top_idx(i, ny),
+            top_idx(i + 1, ny)
+        ));
+    }
+    // Left wall (`i = 0`, -X outward)
+    for j in 0..ny {
+        out.push_str(&format!(
+            "f {} {} {} {}\n",
+            bot_idx(0, j + 1),
+            bot_idx(0, j),
+            top_idx(0, j),
+            top_idx(0, j + 1)
+        ));
+    }
+    // Right wall (`i = nx`, +X outward)
+    for j in 0..ny {
+        out.push_str(&format!(
+            "f {} {} {} {}\n",
+            bot_idx(nx, j),
+            bot_idx(nx, j + 1),
+            top_idx(nx, j + 1),
+            top_idx(nx, j)
+        ));
+    }
+
+    out
+}
+
+/// Generates a minimal, valid, watertight 3MF OPC ZIP archive containing a `2 × 1 × 0.5` box
+/// tagged with `unit` and optional 12-float 3×4 `<item transform="...">` string.
+pub fn sample_box_3mf_bytes(unit_attr: &str, transform_str: Option<&str>) -> Vec<u8> {
+    let transform_attr = match transform_str {
+        Some(t) => format!(r#" transform="{t}""#),
+        None => String::new(),
+    };
+
+    let model_xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<model unit="{unit_attr}" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+  <resources>
+    <object id="1" name="Sample3mfBox" type="model">
+      <mesh>
+        <vertices>
+          <vertex x="0" y="0" z="0"/>
+          <vertex x="2" y="0" z="0"/>
+          <vertex x="2" y="1" z="0"/>
+          <vertex x="0" y="1" z="0"/>
+          <vertex x="0" y="0" z="0.5"/>
+          <vertex x="2" y="0" z="0.5"/>
+          <vertex x="2" y="1" z="0.5"/>
+          <vertex x="0" y="1" z="0.5"/>
+        </vertices>
+        <triangles>
+          <triangle v1="0" v2="2" v3="1"/>
+          <triangle v1="0" v2="3" v3="2"/>
+          <triangle v1="4" v2="5" v3="6"/>
+          <triangle v1="4" v2="6" v3="7"/>
+          <triangle v1="0" v2="1" v3="5"/>
+          <triangle v1="0" v2="5" v3="4"/>
+          <triangle v1="1" v2="2" v3="6"/>
+          <triangle v1="1" v2="6" v3="5"/>
+          <triangle v1="2" v2="3" v3="7"/>
+          <triangle v1="2" v2="7" v3="6"/>
+          <triangle v1="3" v2="0" v3="4"/>
+          <triangle v1="3" v2="4" v3="7"/>
+        </triangles>
+      </mesh>
+    </object>
+  </resources>
+  <build>
+    <item objectid="1"{transform_attr}/>
+  </build>
+</model>
+"#
+    );
+
+    let rels_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
+</Relationships>
+"#;
+
+    let content_types_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>
+</Types>
+"#;
+
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    {
+        let mut zw = ZipWriter::new(&mut cursor);
+        let opts = SimpleFileOptions::default()
+            .compression_method(CompressionMethod::Deflated)
+            .last_modified_time(DateTime::default())
+            .system(System::Unix)
+            .unix_permissions(0o644);
+        let _ = zw.start_file("[Content_Types].xml", opts);
+        let _ = zw.write_all(content_types_xml.as_bytes());
+        let _ = zw.start_file("_rels/.rels", opts);
+        let _ = zw.write_all(rels_xml.as_bytes());
+        let _ = zw.start_file("3D/3dmodel.model", opts);
+        let _ = zw.write_all(model_xml.as_bytes());
+        let _ = zw.finish();
+    }
+    cursor.into_inner()
+}
+
+/// Generates a deterministic, 100% watertight, unit-aware millimeter `.3mf` OPC ZIP archive
+/// (`unit="millimeter"`) containing a sculpted **3D Mounting Bracket** (`80 × 56 × 20 mm`,
+/// `X ∈ [0, 80]`, `Y ∈ [0, 56]`, `Z ∈ [0, 20]`):
+/// - Flat `8.0 mm` base flange deck around the perimeter,
+/// - Smoothly blended central sculpted mounting arch & twin saddle lobes rising cleanly to
+///   `Z = 20.0 mm`, ideal for 3D Adaptive Roughing + 3D Constant-Scallop Finishing.
+pub fn sample_sculpted_mount_3mf_bytes() -> Vec<u8> {
+    use std::fmt::Write as _;
+
+    let nx: usize = 32;
+    let ny: usize = 24;
+    let w = 80.0_f64;
+    let h = 56.0_f64;
+    let base_z = 8.0_f64;
+
+    let smoothstep = |edge0: f64, edge1: f64, x: f64| -> f64 {
+        let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    };
+
+    // Precompute exact vertices: top grid `(nx+1)*(ny+1)` followed by flat bottom grid at `Z = 0`
+    let mut vertices: Vec<[f64; 3]> = Vec::with_capacity(2 * (nx + 1) * (ny + 1));
+    let mut raw_z = vec![0.0_f64; (nx + 1) * (ny + 1)];
+    let mut max_bump = 0.0_f64;
+    for j in 0..=ny {
+        let y = (j as f64 / ny as f64) * h;
+        let v = (y - 0.5 * h) / (0.5 * h); // [-1, 1]
+        let env_y = smoothstep(0.96, 0.42, v.abs());
+        for i in 0..=nx {
+            let x = (i as f64 / nx as f64) * w;
+            let u = (x - 0.5 * w) / (0.5 * w); // [-1, 1]
+            let env_x = smoothstep(0.96, 0.42, u.abs());
+            let env = env_x * env_y;
+            let central_ridge = (-((u / 0.52).powi(2) + (v / 0.62).powi(2))).exp();
+            let side_lobes = 0.48
+                * ((-(((u - 0.52) / 0.28).powi(2) + (v / 0.48).powi(2))).exp()
+                    + (-(((u + 0.52) / 0.28).powi(2) + (v / 0.48).powi(2))).exp());
+            let bump = env * (central_ridge + side_lobes);
+            if bump > max_bump {
+                max_bump = bump;
+            }
+            raw_z[j * (nx + 1) + i] = bump;
+        }
+    }
+    let scale_z = if max_bump > 1e-9 {
+        12.0 / max_bump
+    } else {
+        1.0
+    };
+    for j in 0..=ny {
+        let y = (j as f64 / ny as f64) * h;
+        for i in 0..=nx {
+            let x = (i as f64 / nx as f64) * w;
+            let z = base_z + raw_z[j * (nx + 1) + i] * scale_z;
+            vertices.push([x, y, z]);
+        }
+    }
+    for j in 0..=ny {
+        let y = (j as f64 / ny as f64) * h;
+        for i in 0..=nx {
+            let x = (i as f64 / nx as f64) * w;
+            vertices.push([x, y, 0.0]);
+        }
+    }
+
+    let top_idx = |i: usize, j: usize| -> usize { j * (nx + 1) + i };
+    let bot_offset = (nx + 1) * (ny + 1);
+    let bot_idx = |i: usize, j: usize| -> usize { bot_offset + j * (nx + 1) + i };
+
+    let mut tris: Vec<[usize; 3]> = Vec::with_capacity(4 * nx * ny + 4 * (nx + ny));
+    let mut push_quad = |a: usize, b: usize, c: usize, d: usize| {
+        tris.push([a, b, c]);
+        tris.push([a, c, d]);
+    };
+
+    // Top sculpted surface (+Z outward)
+    for j in 0..ny {
+        for i in 0..nx {
+            push_quad(
+                top_idx(i, j),
+                top_idx(i + 1, j),
+                top_idx(i + 1, j + 1),
+                top_idx(i, j + 1),
+            );
+        }
+    }
+    // Flat bottom face (-Z outward)
+    for j in 0..ny {
+        for i in 0..nx {
+            push_quad(
+                bot_idx(i, j),
+                bot_idx(i, j + 1),
+                bot_idx(i + 1, j + 1),
+                bot_idx(i + 1, j),
+            );
+        }
+    }
+    // Front (-Y) & Back (+Y) vertical perimeter walls
+    for i in 0..nx {
+        push_quad(
+            bot_idx(i, 0),
+            bot_idx(i + 1, 0),
+            top_idx(i + 1, 0),
+            top_idx(i, 0),
+        );
+        push_quad(
+            bot_idx(i + 1, ny),
+            bot_idx(i, ny),
+            top_idx(i, ny),
+            top_idx(i + 1, ny),
+        );
+    }
+    // Left (-X) & Right (+X) vertical perimeter walls
+    for j in 0..ny {
+        push_quad(
+            bot_idx(0, j + 1),
+            bot_idx(0, j),
+            top_idx(0, j),
+            top_idx(0, j + 1),
+        );
+        push_quad(
+            bot_idx(nx, j),
+            bot_idx(nx, j + 1),
+            top_idx(nx, j + 1),
+            top_idx(nx, j),
+        );
+    }
+
+    let mut model_xml = String::with_capacity(vertices.len() * 44 + tris.len() * 34 + 512);
+    model_xml.push_str(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+  <resources>
+    <object id="1" name="SculptedMountBracket" type="model">
+      <mesh>
+        <vertices>
+"#,
+    );
+    for [x, y, z] in &vertices {
+        let _ = writeln!(
+            model_xml,
+            r#"          <vertex x="{x:.6}" y="{y:.6}" z="{z:.6}"/>"#
+        );
+    }
+    model_xml.push_str("        </vertices>\n        <triangles>\n");
+    for [v1, v2, v3] in &tris {
+        let _ = writeln!(
+            model_xml,
+            r#"          <triangle v1="{v1}" v2="{v2}" v3="{v3}"/>"#
+        );
+    }
+    model_xml.push_str(
+        r#"        </triangles>
+      </mesh>
+    </object>
+  </resources>
+  <build>
+    <item objectid="1"/>
+  </build>
+</model>
+"#,
+    );
+
+    let rels_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
+</Relationships>
+"#;
+
+    let content_types_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>
+</Types>
+"#;
+
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    {
+        let mut zw = ZipWriter::new(&mut cursor);
+        let opts = SimpleFileOptions::default()
+            .compression_method(CompressionMethod::Deflated)
+            .last_modified_time(DateTime::default())
+            .system(System::Unix)
+            .unix_permissions(0o644);
+        let _ = zw.start_file("[Content_Types].xml", opts);
+        let _ = zw.write_all(content_types_xml.as_bytes());
+        let _ = zw.start_file("_rels/.rels", opts);
+        let _ = zw.write_all(rels_xml.as_bytes());
+        let _ = zw.start_file("3D/3dmodel.model", opts);
+        let _ = zw.write_all(model_xml.as_bytes());
+        let _ = zw.finish();
+    }
+    cursor.into_inner()
+}
+
+/// Generates a deterministic, 100% watertight binary STL of a **4th-Axis Rotary Shaft**
+/// (`Ø40 mm × 80 mm` aligned along the WCS `X / A` axis, `X ∈ [-40, +40]`) combining:
+/// - Left & right `R = 20 mm` cylindrical journals,
+/// - A 4-flat indexed wrench section (`±15 mm` flats at `90°` intervals),
+/// - A reduced turned central collar groove (`R = 14 mm`), and
+/// - A sculpted 3-lobe cam section (`R = 17.5 + 2.0 * cos(3θ)`) for polar target-gouge testing.
+pub fn sample_rotary_shaft_stl_bytes() -> Vec<u8> {
+    let n_theta: usize = 96;
+    let x_stations: &[f64] = &[
+        -40.0, -26.0, -25.0, -6.0, -5.0, -2.5, 7.5, 10.0, 12.0, 28.0, 30.0, 40.0,
+    ];
+
+    let profile_radius = |x: f64, theta: f64| -> f64 {
+        let r_outer = 20.0_f64;
+        if x <= -26.0 || x >= 30.0 {
+            r_outer
+        } else if (-25.0..=-6.0).contains(&x) {
+            let denom = theta.cos().abs().max(theta.sin().abs()).max(1e-6);
+            (15.0 / denom).min(r_outer)
+        } else if (-26.0..-25.0).contains(&x) {
+            let t = x + 26.0;
+            let denom = theta.cos().abs().max(theta.sin().abs()).max(1e-6);
+            let r_sq = (15.0 / denom).min(r_outer);
+            r_outer + (r_sq - r_outer) * t
+        } else if (-6.0..-5.0).contains(&x) {
+            let t = x + 6.0;
+            let denom = theta.cos().abs().max(theta.sin().abs()).max(1e-6);
+            let r_sq = (15.0 / denom).min(r_outer);
+            r_sq + (r_outer - r_sq) * t
+        } else if (-5.0..-2.5).contains(&x) {
+            let t = (x + 5.0) / 2.5;
+            r_outer + (14.0 - r_outer) * t
+        } else if (-2.5..=7.5).contains(&x) {
+            14.0
+        } else if (7.5..10.0).contains(&x) {
+            let t = (x - 7.5) / 2.5;
+            14.0 + (r_outer - 14.0) * t
+        } else if (10.0..12.0).contains(&x) {
+            let t = (x - 10.0) / 2.0;
+            let r_cam = 17.5 + 2.0 * (3.0 * theta).cos();
+            r_outer + (r_cam - r_outer) * t
+        } else if (12.0..=28.0).contains(&x) {
+            17.5 + 2.0 * (3.0 * theta).cos()
+        } else {
+            let t = (x - 28.0) / 2.0;
+            let r_cam = 17.5 + 2.0 * (3.0 * theta).cos();
+            r_cam + (r_outer - r_cam) * t
+        }
+    };
+
+    let mut rings: Vec<Vec<DVec3>> = Vec::with_capacity(x_stations.len());
+    for &x in x_stations {
+        let mut ring = Vec::with_capacity(n_theta);
+        for k in 0..n_theta {
+            let theta = (k as f64 / n_theta as f64) * (2.0 * PI);
+            let r = profile_radius(x, theta);
+            // Match `RotaryAxisKind::XAxis`: e1 = +Z, e2 = -Y -> p = (x, -r sin θ, r cos θ)
+            ring.push(DVec3::new(x, -r * theta.sin(), r * theta.cos()));
+        }
+        rings.push(ring);
+    }
+
+    let mut tris: Vec<[DVec3; 3]> = Vec::with_capacity(n_theta * (2 * x_stations.len() + 2));
+
+    // Lateral skin (outward radial normals)
+    for s in 0..(rings.len() - 1) {
+        for k in 0..n_theta {
+            let kn = (k + 1) % n_theta;
+            let a = rings[s][k];
+            let b = rings[s + 1][k];
+            let c = rings[s + 1][kn];
+            let d = rings[s][kn];
+            tris.push([a, b, c]);
+            tris.push([a, c, d]);
+        }
+    }
+
+    // Left end cap (`X = -40`, outward normal `-X`)
+    let left_center = DVec3::new(x_stations[0], 0.0, 0.0);
+    let left_ring = &rings[0];
+    for k in 0..n_theta {
+        let kn = (k + 1) % n_theta;
+        tris.push([left_center, left_ring[k], left_ring[kn]]);
+    }
+
+    // Right end cap (`X = +40`, outward normal `+X`)
+    let right_center = DVec3::new(x_stations[x_stations.len() - 1], 0.0, 0.0);
+    let right_ring = &rings[rings.len() - 1];
+    for k in 0..n_theta {
+        let kn = (k + 1) % n_theta;
+        tris.push([right_center, right_ring[kn], right_ring[k]]);
+    }
+
+    encode_binary_stl("ChipCutter Rotary Indexed Shaft Fixture (mm)", &tris)
+}
+
+/// Generates a deterministic, 100% watertight binary STL of a **Simultaneous 4-Axis Helical
+/// Flute / Impeller Shaft** (`Ø40 mm × 80 mm` aligned along WCS `X / A`, `X ∈ [-40, +40]`):
+/// - Left & right `R = 20 mm` cylindrical journals (`X ∈ [-40, -28]` and `[+28, +40]`),
+/// - A smoothly blended **3-start helical flute section** (`120°` twist across `X ∈ [-24, +24]`)
+///   with sculpted asymmetric flank walls and concave roots down to `R = 13.5 mm`, designed for
+///   simultaneous `X+Y+Z+A` off-centerline tilted milling and cylindrical gouge verification.
+pub fn sample_helical_flute_shaft_stl_bytes() -> Vec<u8> {
+    let n_theta: usize = 96;
+    let mut x_stations: Vec<f64> = Vec::with_capacity(42);
+    x_stations.push(-40.0);
+    x_stations.push(-30.0);
+    let n_helical = 36usize;
+    for i in 0..=n_helical {
+        let t = i as f64 / n_helical as f64;
+        x_stations.push(-28.0 + t * 56.0);
+    }
+    x_stations.push(30.0);
+    x_stations.push(40.0);
+
+    let smoothstep = |edge0: f64, edge1: f64, x: f64| -> f64 {
+        let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    };
+
+    let profile_radius = |x: f64, theta: f64| -> f64 {
+        let r_outer = 20.0_f64;
+        let env = smoothstep(-28.0, -21.0, x) * smoothstep(28.0, 21.0, x);
+        if env <= 1e-6 {
+            return r_outer;
+        }
+        let twist = (x / 48.0) * (2.0 * PI / 3.0);
+        let phi = 3.0 * (theta - twist);
+        // Asymmetric helical impeller flute wave in [0, 1]
+        let wave = (0.5 * (1.0 - phi.cos()) + 0.14 * (2.0 * phi).sin()).clamp(0.0, 1.0);
+        let depth = 6.5 * env * wave;
+        (r_outer - depth).max(12.0)
+    };
+
+    let mut rings: Vec<Vec<DVec3>> = Vec::with_capacity(x_stations.len());
+    for &x in &x_stations {
+        let mut ring = Vec::with_capacity(n_theta);
+        for k in 0..n_theta {
+            let theta = (k as f64 / n_theta as f64) * (2.0 * PI);
+            let r = profile_radius(x, theta);
+            ring.push(DVec3::new(x, -r * theta.sin(), r * theta.cos()));
+        }
+        rings.push(ring);
+    }
+
+    let mut tris: Vec<[DVec3; 3]> = Vec::with_capacity(n_theta * (2 * x_stations.len() + 2));
+    for s in 0..(rings.len() - 1) {
+        for k in 0..n_theta {
+            let kn = (k + 1) % n_theta;
+            let a = rings[s][k];
+            let b = rings[s + 1][k];
+            let c = rings[s + 1][kn];
+            let d = rings[s][kn];
+            tris.push([a, b, c]);
+            tris.push([a, c, d]);
+        }
+    }
+
+    let left_center = DVec3::new(x_stations[0], 0.0, 0.0);
+    let left_ring = &rings[0];
+    for k in 0..n_theta {
+        let kn = (k + 1) % n_theta;
+        tris.push([left_center, left_ring[k], left_ring[kn]]);
+    }
+
+    let right_center = DVec3::new(x_stations[x_stations.len() - 1], 0.0, 0.0);
+    let right_ring = &rings[rings.len() - 1];
+    for k in 0..n_theta {
+        let kn = (k + 1) % n_theta;
+        tris.push([right_center, right_ring[kn], right_ring[k]]);
+    }
+
+    encode_binary_stl(
+        "ChipCutter Simultaneous 4-Axis Helical Flute Shaft (mm)",
+        &tris,
+    )
+}
+
+/// Generates a deterministic, 100% watertight binary STL of a **Triple-Helix Overhanging Loft**
+/// (`Ø36 mm × 56 mm` aligned along WCS `X / A`, `X ∈ [-28, +28]`, ~3.7k triangles) with:
+/// - Left cylindrical clamping journal (`X ∈ [-28, -21]`, `R = 14 mm`),
+/// - A 3-blade twisted helical loft (`X ∈ [-20, +15]`, `120°` total twist, hub `R = 9 mm` to
+///   blade crests `R = 18 mm`) whose blades curl circumferentially by `~41°`, creating genuine
+///   **circumferential overhangs** (`n · e_r < 0`) beneath every helical blade crest, and
+/// - An **axial overhanging retaining shroud / lip** (`X ∈ [+16.5, +22]`, `R = 17.5 mm`
+///   overhanging a recessed `X ∈ [+16.5, +19.5]` annular cavity down to `R = 9 mm`) followed by
+///   the right journal (`X ∈ [+22, +28]`, `R = 14 mm`), creating genuine **axial (`u`-direction)
+///   undercuts** unreachable from vertical cylindrical poses.
+pub fn sample_triple_helix_loft_stl_bytes() -> Vec<u8> {
+    let n_theta: usize = 60; // Divisible by 3, 4, 5, 6, 12 for exact 3-blade symmetry
+    let r_hub = 9.0_f64;
+    let blade_height = 9.0_f64; // Crests at R = 18.0 mm
+    let total_twist_rad = (2.0 * PI) / 3.0; // 120° twist across the helical blade span
+    let curl_rad = 0.72_f64; // ~41° circumferential blade curl -> true circumferential overhang
+
+    let smoothstep = |edge0: f64, edge1: f64, x: f64| -> f64 {
+        let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    };
+
+    // Build ordered axial rings `(x, r, env_blade, twist_rad)` walking cleanly along a simple
+    // non-self-intersecting 2D profile from X = -28 mm to X = +28 mm.
+    let mut rings: Vec<Vec<DVec3>> = Vec::with_capacity(34);
+
+    let push_cylinder_ring = |rings: &mut Vec<Vec<DVec3>>, x: f64, r: f64| {
+        let mut ring = Vec::with_capacity(n_theta);
+        for k in 0..n_theta {
+            let s = (k as f64 / n_theta as f64) * (2.0 * PI);
+            // Match `RotaryAxisKind::XAxis`: e1 = +Z, e2 = -Y -> p = (x, -r sin θ, r cos θ)
+            ring.push(DVec3::new(x, -r * s.sin(), r * s.cos()));
+        }
+        rings.push(ring);
+    };
+
+    // 1. Left cylindrical journal (`X = -28 .. -21`, R = 14 mm) tapering to hub (`X = -20`, R = 9 mm)
+    push_cylinder_ring(&mut rings, -28.0, 14.0);
+    push_cylinder_ring(&mut rings, -21.0, 14.0);
+
+    // 2. Main 3-blade twisted overhanging helical loft (`X = -20 .. +15`)
+    let n_helical = 22usize;
+    let x_hel_start = -20.0_f64;
+    let x_hel_end = 15.0_f64;
+    for i in 0..=n_helical {
+        let t = i as f64 / n_helical as f64;
+        let x = x_hel_start + t * (x_hel_end - x_hel_start);
+        let env = smoothstep(x_hel_start, x_hel_start + 3.5, x)
+            * smoothstep(x_hel_end, x_hel_end - 3.5, x);
+        let twist = t * total_twist_rad;
+        let mut ring = Vec::with_capacity(n_theta);
+        for k in 0..n_theta {
+            let s = (k as f64 / n_theta as f64) * (2.0 * PI);
+            let h = (0.5 + 0.5 * (3.0 * s).cos()).powi(2);
+            let r = r_hub + blade_height * env * h;
+            let theta = s + twist + curl_rad * env * h;
+            ring.push(DVec3::new(x, -r * theta.sin(), r * theta.cos()));
+        }
+        rings.push(ring);
+    }
+
+    // 3. Axial overhang undercut cavity + retaining shroud lip + right journal (`X = +16 .. +28`)
+    // Simple non-self-intersecting 2D profile `(x, r)`:
+    // (16.0, 9.0) -> (19.5, 9.0) -> (19.5, 12.5) -> (16.5, 15.5) -> (16.5, 17.5)
+    //             -> (22.0, 17.5) -> (22.0, 14.0) -> (28.0, 14.0)
+    for &(x, r) in &[
+        (16.0, 9.0),
+        (19.5, 9.0),
+        (19.5, 12.5),
+        (16.5, 15.5),
+        (16.5, 17.5),
+        (22.0, 17.5),
+        (22.0, 14.0),
+        (28.0, 14.0),
+    ] {
+        push_cylinder_ring(&mut rings, x, r);
+    }
+
+    let mut tris: Vec<[DVec3; 3]> = Vec::with_capacity(n_theta * (2 * rings.len() + 2));
+
+    // Lateral skin with strictly outward normals `(d - a) x (b - a)` pointing outward into air
+    for s in 0..(rings.len() - 1) {
+        for k in 0..n_theta {
+            let kn = (k + 1) % n_theta;
+            let a = rings[s][k];
+            let b = rings[s + 1][k];
+            let c = rings[s + 1][kn];
+            let d = rings[s][kn];
+            tris.push([a, d, c]);
+            tris.push([a, c, b]);
+        }
+    }
+
+    // Left end cap (`X = -28`, outward normal `-X`)
+    let left_center = DVec3::new(-28.0, 0.0, 0.0);
+    let left_ring = &rings[0];
+    for k in 0..n_theta {
+        let kn = (k + 1) % n_theta;
+        tris.push([left_center, left_ring[kn], left_ring[k]]);
+    }
+
+    // Right end cap (`X = +28`, outward normal `+X`)
+    let right_center = DVec3::new(28.0, 0.0, 0.0);
+    let right_ring = &rings[rings.len() - 1];
+    for k in 0..n_theta {
+        let kn = (k + 1) % n_theta;
+        tris.push([right_center, right_ring[k], right_ring[kn]]);
+    }
+
+    encode_binary_stl("ChipCutter Triple-Helix Overhanging Loft (mm)", &tris)
+}
+
+/// Generates a deterministic, 100% watertight binary STL of a **Sculpted Mounting Boss**
+/// (`60 × 40 × 18 mm` when upright: `60 × 40 × 6 mm` rectangular flange with an `R = 12 mm`
+/// smooth hemispherical boss on top), exported **Y-up** (lying sideways along `+Y`, rotated
+/// `-90° X`) and shifted off-origin (`X ∈ [15, 75]`, `Y ∈ [12, 30]`, `Z ∈ [-50, -10]`).
+///
+/// Used in **Tutorial 16** (`16-yup-bracket.stl`) to practice `Y-Up -> Z-Up (+90° X)`,
+/// `Lay Flat on Clicked Face…`, `Scale` / `Target Size`, `Center XY`, and `Drop Bottom to Z=0`.
+pub fn tutorial_yup_bracket_stl_bytes() -> Vec<u8> {
+    let n_theta: usize = 48; // multiple of 4 so rectangle corners hit exact rays
+    let n_phi: usize = 12;
+    let radius = 12.0f64;
+    let base_h = 6.0f64;
+    let half_x = 30.0f64;
+    let half_y = 20.0f64;
+
+    let mut upright_tris: Vec<[DVec3; 3]> = Vec::with_capacity(n_theta * (2 * n_phi + 5));
+
+    let mut rings: Vec<Vec<DVec3>> = Vec::with_capacity(n_phi);
+    for j in 0..n_phi {
+        let phi = (j as f64 / n_phi as f64) * (0.5 * PI);
+        let r = radius * phi.cos();
+        let z = base_h + radius * phi.sin();
+        let mut ring = Vec::with_capacity(n_theta);
+        for k in 0..n_theta {
+            let theta = (k as f64 / n_theta as f64) * (2.0 * PI);
+            ring.push(DVec3::new(r * theta.cos(), r * theta.sin(), z));
+        }
+        rings.push(ring);
+    }
+    let apex = DVec3::new(0.0, 0.0, base_h + radius);
+
+    for j in 0..(n_phi - 1) {
+        for k in 0..n_theta {
+            let kn = (k + 1) % n_theta;
+            let a = rings[j][k];
+            let b = rings[j][kn];
+            let c = rings[j + 1][kn];
+            let d = rings[j + 1][k];
+            upright_tris.push([a, b, c]);
+            upright_tris.push([a, c, d]);
+        }
+    }
+    let top_ring = &rings[n_phi - 1];
+    for k in 0..n_theta {
+        let kn = (k + 1) % n_theta;
+        upright_tris.push([top_ring[k], top_ring[kn], apex]);
+    }
+
+    let mut rect_top = Vec::with_capacity(n_theta);
+    let mut rect_bot = Vec::with_capacity(n_theta);
+    for k in 0..n_theta {
+        let theta = (k as f64 / n_theta as f64) * (2.0 * PI);
+        let c = theta.cos();
+        let s = theta.sin();
+        let tx = if c.abs() > 1e-12 {
+            half_x / c.abs()
+        } else {
+            f64::INFINITY
+        };
+        let ty = if s.abs() > 1e-12 {
+            half_y / s.abs()
+        } else {
+            f64::INFINITY
+        };
+        let scale = tx.min(ty);
+        let x = scale * c;
+        let y = scale * s;
+        rect_top.push(DVec3::new(x, y, base_h));
+        rect_bot.push(DVec3::new(x, y, 0.0));
+    }
+
+    let equator = &rings[0];
+    for k in 0..n_theta {
+        let kn = (k + 1) % n_theta;
+        upright_tris.push([equator[k], rect_top[k], rect_top[kn]]);
+        upright_tris.push([equator[k], rect_top[kn], equator[kn]]);
+    }
+    for k in 0..n_theta {
+        let kn = (k + 1) % n_theta;
+        upright_tris.push([rect_bot[k], rect_bot[kn], rect_top[kn]]);
+        upright_tris.push([rect_bot[k], rect_top[kn], rect_top[k]]);
+    }
+    let bot_center = DVec3::ZERO;
+    for k in 0..n_theta {
+        let kn = (k + 1) % n_theta;
+        upright_tris.push([bot_center, rect_bot[kn], rect_bot[k]]);
+    }
+
+    // Export Y-up (rotate -90° around X: (x, y, z) -> (x, z, -y)) and offset off-origin
+    // so `+90° X` (Y-Up -> Z-Up) restores exact upright Z-up orientation!
+    let offset = DVec3::new(45.0, 12.0, -30.0);
+    let to_yup = |p: DVec3| DVec3::new(p.x, p.z, -p.y) + offset;
+    let yup_tris: Vec<[DVec3; 3]> = upright_tris
+        .into_iter()
+        .map(|[a, b, c]| [to_yup(a), to_yup(b), to_yup(c)])
+        .collect();
+
+    encode_binary_stl(
+        "ChipCutter Tutorial 16 Y-Up Sculpted Mounting Boss (mm)",
+        &yup_tris,
+    )
+}
+
+/// Generates a deterministic watertight binary STL of the built-in two-sided aluminum manifold
+/// bracket (`64 × 50 × 16 mm`):
+/// - Lower flange: `X ∈ [0, 64], Y ∈ [0, 50], Z ∈ [0, 10]`
+/// - Upper centered stepped boss: `X ∈ [14, 50], Y ∈ [11, 39], Z ∈ [10, 16]`
+pub fn sample_two_sided_vise_part_stl_bytes() -> Vec<u8> {
+    let mut tris: Vec<([f32; 3], [f32; 3], [f32; 3])> = Vec::new();
+    let mut push_quad = |a: [f32; 3], b: [f32; 3], c: [f32; 3], d: [f32; 3]| {
+        tris.push((a, b, c));
+        tris.push((a, c, d));
+    };
+
+    let (x0, x1, y0, y1, z0, z1) = (0.0_f32, 64.0_f32, 0.0_f32, 50.0_f32, 0.0_f32, 10.0_f32);
+    let (bx0, bx1, by0, by1, bz1) = (14.0_f32, 50.0_f32, 11.0_f32, 39.0_f32, 16.0_f32);
+    let xs = [x0, bx0, bx1, x1];
+    let ys = [y0, by0, by1, y1];
+
+    // Bottom face (Z = 0, normal -Z) on the exact 3x3 grid so every edge matches the side walls
+    for ix in 0..3 {
+        for iy in 0..3 {
+            push_quad(
+                [xs[ix], ys[iy], z0],
+                [xs[ix], ys[iy + 1], z0],
+                [xs[ix + 1], ys[iy + 1], z0],
+                [xs[ix + 1], ys[iy], z0],
+            );
+        }
+    }
+
+    // Lower flange outer walls (Z = 0..10), split cleanly at bx0/bx1 and by0/by1 (zero T-junctions!)
+    for ix in 0..3 {
+        push_quad(
+            [xs[ix], y0, z0],
+            [xs[ix + 1], y0, z0],
+            [xs[ix + 1], y0, z1],
+            [xs[ix], y0, z1],
+        ); // -Y
+        push_quad(
+            [xs[ix + 1], y1, z0],
+            [xs[ix], y1, z0],
+            [xs[ix], y1, z1],
+            [xs[ix + 1], y1, z1],
+        ); // +Y
+    }
+    for iy in 0..3 {
+        push_quad(
+            [x0, ys[iy + 1], z0],
+            [x0, ys[iy], z0],
+            [x0, ys[iy], z1],
+            [x0, ys[iy + 1], z1],
+        ); // -X
+        push_quad(
+            [x1, ys[iy], z0],
+            [x1, ys[iy + 1], z0],
+            [x1, ys[iy + 1], z1],
+            [x1, ys[iy], z1],
+        ); // +X
+    }
+
+    // Horizontal stepped flange shelf at Z = 10 surrounding upper boss (8 outer cells of 3x3 grid)
+    for ix in 0..3 {
+        for iy in 0..3 {
+            if ix == 1 && iy == 1 {
+                continue;
+            }
+            push_quad(
+                [xs[ix], ys[iy], z1],
+                [xs[ix + 1], ys[iy], z1],
+                [xs[ix + 1], ys[iy + 1], z1],
+                [xs[ix], ys[iy + 1], z1],
+            );
+        }
+    }
+
+    // Upper boss walls (Z = 10..16)
+    push_quad(
+        [bx0, by0, z1],
+        [bx1, by0, z1],
+        [bx1, by0, bz1],
+        [bx0, by0, bz1],
+    );
+    push_quad(
+        [bx1, by1, z1],
+        [bx0, by1, z1],
+        [bx0, by1, bz1],
+        [bx1, by1, bz1],
+    );
+    push_quad(
+        [bx0, by1, z1],
+        [bx0, by0, z1],
+        [bx0, by0, bz1],
+        [bx0, by1, bz1],
+    );
+    push_quad(
+        [bx1, by0, z1],
+        [bx1, by1, z1],
+        [bx1, by1, bz1],
+        [bx1, by0, bz1],
+    );
+
+    // Upper boss top face (Z = 16, normal +Z)
+    push_quad(
+        [bx0, by0, bz1],
+        [bx1, by0, bz1],
+        [bx1, by1, bz1],
+        [bx0, by1, bz1],
+    );
+
+    let mut bytes = Vec::with_capacity(84 + tris.len() * 50);
+    let mut header = [0u8; 80];
+    let title = b"ChipCutter Two-Sided Vise Bracket (64x50x16mm)";
+    header[..title.len()].copy_from_slice(title);
+    bytes.extend_from_slice(&header);
+    bytes.extend_from_slice(&(tris.len() as u32).to_le_bytes());
+
+    for (v0, v1, v2) in tris {
+        let e1 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
+        let e2 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
+        let nx = e1[1] * e2[2] - e1[2] * e2[1];
+        let ny = e1[2] * e2[0] - e1[0] * e2[2];
+        let nz = e1[0] * e2[1] - e1[1] * e2[0];
+        let len = (nx * nx + ny * ny + nz * nz).sqrt().max(1e-12);
+        for c in [nx / len, ny / len, nz / len] {
+            bytes.extend_from_slice(&c.to_le_bytes());
+        }
+        for v in [v0, v1, v2] {
+            for c in v {
+                bytes.extend_from_slice(&c.to_le_bytes());
+            }
+        }
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+    }
+    bytes
+}

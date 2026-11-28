@@ -1,4 +1,3 @@
-pub mod fixtures;
 pub mod obj;
 pub mod stl;
 pub mod threemf;
@@ -13,11 +12,6 @@ use crate::{
     model::{BodyId, CadDocument, FaceId, FaceTriangle, RenderMesh, RenderVertex, StepUnitKind},
 };
 
-pub use fixtures::{
-    sample_box_3mf_bytes, sample_helical_flute_shaft_stl_bytes, sample_relief_wave_obj_text,
-    sample_rotary_shaft_stl_bytes, sample_sculpted_dome_stl_bytes, sample_sculpted_mount_3mf_bytes,
-    sample_triple_helix_loft_stl_bytes, tutorial_yup_bracket_stl_bytes,
-};
 pub use stl::encode_binary_stl;
 
 /// Source file format of an imported triangle mesh.
@@ -471,6 +465,10 @@ pub fn build_render_mesh_for_triangle_mesh(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    use chip_fixtures::{
+        sample_box_3mf_bytes, sample_relief_wave_obj_text, sample_sculpted_dome_stl_bytes,
+        sample_sculpted_mount_3mf_bytes, sample_triple_helix_loft_stl_bytes,
+    };
     use chip_math::{Ray3, approx_eq};
 
     use super::*;
@@ -588,7 +586,7 @@ f -5/1/1 -4/2/1 -3/3/1 -2/4/1 -1/5/1
         use std::io::Write as _;
 
         // 1. Inch 3MF with 3x4 translation transform `(1, 2, 0)` in inches!
-        let bytes_in = sample_box_3mf_bytes(MeshUnitKind::Inch, Some("1 0 0 0 1 0 0 0 1 1 2 0"));
+        let bytes_in = sample_box_3mf_bytes("inch", Some("1 0 0 0 1 0 0 0 1 1 2 0"));
         let box_in =
             load_mesh_bytes("inch_box.3mf", &bytes_in, &MeshImportOptions::default()).unwrap();
         assert_eq!(box_in.format, MeshFormat::ThreeMf);
@@ -665,7 +663,7 @@ f -5/1/1 -4/2/1 -3/3/1 -2/4/1 -1/5/1
         for (label, bytes) in [
             (
                 "sample_box_3mf_bytes",
-                sample_box_3mf_bytes(MeshUnitKind::Millimeter, None),
+                sample_box_3mf_bytes("millimeter", None),
             ),
             (
                 "sample_sculpted_mount_3mf_bytes",

@@ -115,70 +115,7 @@ pub enum CamError {
     },
 }
 
-/// Controller work coordinate offset slot (`G54`..`G59`, `G59.1`..`G59.3`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum WorkOffsetSlot {
-    #[serde(rename = "default")]
-    Default,
-    #[default]
-    G54,
-    G55,
-    G56,
-    G57,
-    G58,
-    G59,
-    #[serde(rename = "G59.1")]
-    G59_1,
-    #[serde(rename = "G59.2")]
-    G59_2,
-    #[serde(rename = "G59.3")]
-    G59_3,
-}
-
-impl WorkOffsetSlot {
-    pub const ALL: [Self; 10] = [
-        Self::Default,
-        Self::G54,
-        Self::G55,
-        Self::G56,
-        Self::G57,
-        Self::G58,
-        Self::G59,
-        Self::G59_1,
-        Self::G59_2,
-        Self::G59_3,
-    ];
-
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Default => "0 (Controller Default)",
-            Self::G54 => "G54 (Offset 1)",
-            Self::G55 => "G55 (Offset 2)",
-            Self::G56 => "G56 (Offset 3)",
-            Self::G57 => "G57 (Offset 4)",
-            Self::G58 => "G58 (Offset 5)",
-            Self::G59 => "G59 (Offset 6)",
-            Self::G59_1 => "G59.1 (Offset 7)",
-            Self::G59_2 => "G59.2 (Offset 8)",
-            Self::G59_3 => "G59.3 (Offset 9)",
-        }
-    }
-
-    pub const fn short_code(self) -> &'static str {
-        match self {
-            Self::Default => "Default",
-            Self::G54 => "G54",
-            Self::G55 => "G55",
-            Self::G56 => "G56",
-            Self::G57 => "G57",
-            Self::G58 => "G58",
-            Self::G59 => "G59",
-            Self::G59_1 => "G59.1",
-            Self::G59_2 => "G59.2",
-            Self::G59_3 => "G59.3",
-        }
-    }
-}
+pub use chip_cl::WorkOffsetSlot;
 
 /// 1D anchor selector along a bounding box axis (`Min`, `Center`, `Max`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -662,6 +599,28 @@ impl WcsConfig {
             let _ = off.reevaluate(ctx);
         }
     }
+
+    /// Formats a concise human-readable WCS Zero summary for operator headers (`07-post-processor.md`).
+    pub fn describe_origin(&self) -> String {
+        let base = match &self.origin {
+            WcsOriginMode::StockBoxPoint { anchor } => format!("Stock {}", anchor.label()),
+            WcsOriginMode::ModelBoxPoint { anchor } => format!("Model {}", anchor.label()),
+            WcsOriginMode::SelectedCadFeature { .. } => "Selected CAD Feature".to_string(),
+        };
+        let dx = self.additional_offset_wcs[0].value_mm;
+        let dy = self.additional_offset_wcs[1].value_mm;
+        let dz = self.additional_offset_wcs[2].value_mm;
+        if dx.abs() > 1e-4 || dy.abs() > 1e-4 || dz.abs() > 1e-4 {
+            format!("{base} (+Offset {dx:+.2}, {dy:+.2}, {dz:+.2} mm)")
+        } else {
+            base
+        }
+    }
+}
+
+/// Formats a concise human-readable WCS Zero summary for operator headers (`07-post-processor.md`).
+pub fn describe_wcs_origin(wcs: &WcsConfig) -> String {
+    wcs.describe_origin()
 }
 
 #[cfg(test)]

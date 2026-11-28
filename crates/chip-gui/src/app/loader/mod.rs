@@ -7,6 +7,7 @@ use std::{
 };
 
 use chip_cad::{CadDocument, CadPicker, MeshUnitKind, TopologyGraph, load_model_bytes_cad_doc};
+use chip_demos::SampleId;
 use chip_project::{
     ProjectDocument, compute_sha256_hex, create_private_temp_extract_dir, export_chipz_bundle,
     external_or_suspicious_assets_referenced, is_chipz_path, is_flatpak_document_portal_path,
@@ -22,24 +23,7 @@ use crate::{
 pub(crate) enum LoadPurpose {
     FreshImport { update_model_entry: bool },
     SeedBlankSample,
-    SeedMultiFeatureBracket,
-    SeedCamTortureBlock,
-    SeedAdaptiveRestDemo,
-    SeedRevisionDemoV1,
-    SeedSculptedMeshDome,
-    SeedReliefWaveMesh,
-    SeedRotaryIndexedShaft,
-    SeedRotaryHelicalFlute,
-    SeedThreadMillManifold,
-    SeedTwoSidedViseWorkholding,
-    SeedUndercutAndDeburrBlock,
-    SeedFeedOptPocket,
-    SeedFlipJigSoftJaws,
-    SeedCurvedDeburr3D,
-    SeedDovetailRailKeyway,
-    SeedMesh3mfBracket,
-    SeedKeepOutClamps,
-    SeedIndexedModelBounds,
+    SeedSample(SampleId),
     ReloadRebind { update_path: bool },
     ReloadMeshUnits,
 }
@@ -126,7 +110,7 @@ impl ChipCutterApp {
         self.highlight.clear_project_scene_state();
         self.modals.mesh_import.open = false;
         self.modals.vector_import.open = false;
-        self.machines = chip_tools::load_available_machines(project_dir);
+        self.machines = chip_machines::load_available_machines(project_dir);
     }
 
     pub(crate) fn open_step_dialog(&mut self, ctx: &egui::Context) {
@@ -666,15 +650,14 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    use chip_cad::{
-        FaceId, PickTarget, sample_relief_wave_obj_text, sample_sculpted_dome_stl_bytes,
-    };
+    use chip_cad::{FaceId, PickTarget};
     use chip_cam::{MotionRole, ToolpathBuilder};
+    use chip_demos::{build_pure2d_router_panel_demo_project, build_relief_wave_mesh_project};
+    use chip_fixtures::{sample_relief_wave_obj_text, sample_sculpted_dome_stl_bytes};
     use chip_math::DVec3;
     use chip_post::PostOutputFile;
     use chip_project::{
-        ModelEntry, ProjectDocument, build_pure2d_router_panel_demo_project,
-        build_relief_wave_mesh_project, compute_sha256_hex, create_private_temp_extract_dir,
+        ModelEntry, ProjectDocument, compute_sha256_hex, create_private_temp_extract_dir,
         export_chipz_bundle,
     };
     use chip_sim::{
@@ -1059,7 +1042,7 @@ mod tests {
         let recovered_step_path = tmp.join("recovered_part.step");
         std::fs::write(
             &recovered_step_path,
-            chip_cad::sample_machined_plate_step().unwrap(),
+            chip_fixtures::sample_machined_plate_step().unwrap(),
         )
         .unwrap();
 

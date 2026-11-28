@@ -15,5 +15,7 @@ thiserror.workspace = true
 zip.workspace = true
 monstertruck-io.workspace = true
 monstertruck-meshing.workspace = true
-monstertruck-modeling.workspace = true
 monstertruck-topology.workspace = true
+
+[dev-dependencies]
+chip-fixtures.workspace = true

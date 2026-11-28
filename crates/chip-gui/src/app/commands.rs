@@ -152,7 +152,7 @@ impl ChipCutterApp {
         self.prepare_for_project_replacement(None, None);
         let mut doc = ProjectDocument::new(name);
         doc.display_units = self.prefs.default_units;
-        if self.prefs.default_machine_id != chip_tools::DEFAULT_MACHINE_ID
+        if self.prefs.default_machine_id != chip_machines::DEFAULT_MACHINE_ID
             && let Some(m) = self
                 .machines
                 .iter()

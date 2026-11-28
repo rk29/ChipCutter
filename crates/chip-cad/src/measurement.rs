@@ -892,12 +892,11 @@ fn safe_unit(v: DVec3, fallback: DVec3) -> DVec3 {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    use chip_fixtures::sample_multi_feature_bracket_step;
     use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, RigidFrame3, approx_eq};
 
     use super::*;
-    use crate::{
-        CadKernel, MonstertruckKernel, find_same_diameter_holes, sample_multi_feature_bracket_step,
-    };
+    use crate::{CadKernel, MonstertruckKernel, find_same_diameter_holes};
 
     #[test]
     fn exact_f64_brep_bracket_measures_hole_diameter_center_pitch_and_parallel_face_depth() {

@@ -13,10 +13,10 @@ use chip_cam::{
     AxisAnchor, BoxAnchor27, FixtureBody, ResolvedFixtureSolid, ResolvedSetup, RotaryConfig, Setup,
     SetupHeights, StockConfig, WcsConfig, WorkOffsetSlot,
 };
+use chip_machines::MachineDefinition;
 use chip_math::{EvalContext, ParamLength};
 use chip_post::{PostProfileSource, load_available_post_profiles};
 use chip_project::{ModelEntry, ProjectDocument, UndoHistory};
-use chip_tools::MachineDefinition;
 
 use crate::{
     panels::{SetupTab, ViewportPickMode},

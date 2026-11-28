@@ -5,12 +5,15 @@ use std::{
 };
 
 use chip_cad::CadDocument;
-use chip_cam::{FixtureKind, GeneratedToolpath, Operation, resolve_setup_fixtures};
+use chip_cam::{
+    FixtureKind, GeneratedToolpath, Operation, ResolvedStockGeometry, StockAxis,
+    describe_wcs_origin, resolve_setup_fixtures,
+};
 use chip_math::RigidFrame3;
 use chip_post::{
-    OperationPostInput, PostOutputFile, PostProfile, PostProfileSource, SetupPostInput,
-    describe_wcs_origin, load_available_post_profiles, post_process_setup, resolve_post_profile,
-    validate_safe_output_filename,
+    OperationPostInput, PostOutputFile, PostProfile, PostProfileSource, PostRotarySetup,
+    PostStockSummary, SetupPostInput, load_available_post_profiles, post_process_setup,
+    resolve_post_profile, validate_safe_output_filename,
 };
 use chip_sim::{
     MachineKinematicsConfig, SetupSimulationInput, SetupSimulationResult, SimComputeBackendChoice,
@@ -101,7 +104,7 @@ pub fn resolve_setup_kinematics(
 ) -> MachineKinematicsConfig {
     if let Some(mid) = project.machine_id.as_deref()
         && !mid.trim().is_empty()
-        && let Ok(machine) = chip_tools::resolve_machine_definition(mid, project_dir)
+        && let Ok(machine) = chip_machines::resolve_machine_definition(mid, project_dir)
     {
         return machine.kinematics;
     }
@@ -666,19 +669,48 @@ pub fn post_process_project_setup(
     let post_ops: Vec<OperationPostInput<'_>> = ready
         .iter()
         .map(|item| OperationPostInput {
-            op: item.op,
+            op_name: &item.op.name,
             tool: item.tool,
             toolpath: item.toolpath.as_ref(),
         })
         .collect();
+
+    let post_stock = match resolved.stock {
+        ResolvedStockGeometry::Box { aabb_wcs } => PostStockSummary::Box {
+            size_mm: aabb_wcs.size(),
+        },
+        ResolvedStockGeometry::Cylinder {
+            axis,
+            radius_mm,
+            min_axial_mm,
+            max_axial_mm,
+            ..
+        } => PostStockSummary::Cylinder {
+            axis_label: match axis {
+                StockAxis::X => 'X',
+                StockAxis::Y => 'Y',
+                StockAxis::Z => 'Z',
+            },
+            diameter_mm: 2.0 * radius_mm,
+            length_mm: (max_axial_mm - min_axial_mm).abs(),
+        },
+    };
+    let post_rotary = resolved.rotary.map(|rot| PostRotarySetup {
+        axis_letter: rot.axis_letter,
+        axis_label: rot.axis.label(),
+        mode_label: rot.mode.label(),
+        stock_outer_radius_mm: rot.stock_outer_radius_mm,
+        clearance_radius_mm: rot.clearance_radius_mm,
+        unwind_mode: rot.unwind_mode,
+    });
 
     let post_input = SetupPostInput {
         project_name: req.project_label,
         setup_name: &setup.name,
         wcs_slot: setup.wcs_slot,
         wcs_origin_description: describe_wcs_origin(&setup.wcs),
-        stock: resolved.stock,
-        rotary: resolved.rotary,
+        stock: post_stock,
+        rotary: post_rotary,
         clearance_z_wcs: resolved.clearance_z_wcs,
         retract_z_wcs: resolved.retract_z_wcs,
         operations: post_ops,
@@ -1029,7 +1061,7 @@ mod tests {
         assert_eq!(from_post, linuxcnc_prof.to_kinematics_spec());
 
         // Explicit machine_id -> honors machine kinematics over post_profile
-        let carvera = chip_tools::builtin_carvera_air_machine();
+        let carvera = chip_machines::builtin_carvera_air_machine();
         proj.machine_id = Some(carvera.id.clone());
         let from_machine = resolve_setup_kinematics(&proj, 0, None);
         assert_eq!(from_machine, carvera.kinematics);

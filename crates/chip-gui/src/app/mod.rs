@@ -133,7 +133,7 @@ pub struct ChipCutterApp {
     pub(crate) history: UndoHistory,
     pub(crate) toolpath_cache: ToolpathCache,
     pub(crate) dispatcher: JobDispatcher,
-    pub(crate) machines: Vec<chip_tools::MachineDefinition>,
+    pub(crate) machines: Vec<chip_machines::MachineDefinition>,
     pub(crate) global_tools: ToolLibrary,
     pub(crate) prefs: UserPreferences,
     pub(crate) last_saved_prefs: UserPreferences,
@@ -238,14 +238,14 @@ impl ChipCutterApp {
 
         let (job_tx, job_rx) = crossbeam_channel::unbounded();
         let (reach_job_tx, reach_job_rx) = crossbeam_channel::unbounded();
-        let machines = chip_tools::load_available_machines(None);
+        let machines = chip_machines::load_available_machines(None);
         let default_mid = prefs.default_machine_id.clone();
         let initial_machine = machines
             .iter()
             .find(|m| m.id.eq_ignore_ascii_case(&default_mid))
             .or_else(|| machines.first());
         let global_tools = initial_machine
-            .map(chip_tools::MachineDefinition::to_tool_library)
+            .map(chip_machines::MachineDefinition::to_tool_library)
             .unwrap_or_else(load_or_default_global_library);
         let repaint_ctx = cc.egui_ctx.clone();
         let dispatcher = JobDispatcher::new(Some(Arc::new(move || {
@@ -264,7 +264,7 @@ impl ChipCutterApp {
         let mut initial_project = ProjectDocument::new("Untitled Job");
         initial_project.display_units = prefs.default_units;
         if let Some(m) = initial_machine
-            && m.id != chip_tools::DEFAULT_MACHINE_ID
+            && m.id != chip_machines::DEFAULT_MACHINE_ID
         {
             initial_project.apply_machine_defaults(m, true);
         }
@@ -445,10 +445,10 @@ impl ChipCutterApp {
         let active_theme = prefs.theme;
         let (job_tx, job_rx) = crossbeam_channel::unbounded();
         let (reach_job_tx, reach_job_rx) = crossbeam_channel::unbounded();
-        let machines = chip_tools::load_available_machines(None);
+        let machines = chip_machines::load_available_machines(None);
         let global_tools = machines
             .first()
-            .map(chip_tools::MachineDefinition::to_tool_library)
+            .map(chip_machines::MachineDefinition::to_tool_library)
             .unwrap_or_else(load_or_default_global_library);
         let repaint_ctx = egui_ctx.clone();
         let dispatcher = JobDispatcher::new(Some(Arc::new(move || {
@@ -997,7 +997,7 @@ impl ChipCutterApp {
         }
     }
 
-    pub(crate) fn active_machine(&self) -> Option<&chip_tools::MachineDefinition> {
+    pub(crate) fn active_machine(&self) -> Option<&chip_machines::MachineDefinition> {
         let mid = self.project.effective_machine_id();
         self.machines
             .iter()
@@ -1549,9 +1549,8 @@ mod phase21_ui_tests {
 
     #[test]
     fn new_operations_automatch_project_workpiece_material_and_project_actions_undo() {
-        use chip_tools::{
-            ALUMINUM_6061_T6_ID, ALUMINUM_6063_T5_ID, CARVERA_MACHINE_ID, ProjectMaterialSelection,
-        };
+        use chip_machines::CARVERA_MACHINE_ID;
+        use chip_tools::{ALUMINUM_6061_T6_ID, ALUMINUM_6063_T5_ID, ProjectMaterialSelection};
 
         use crate::panels::project_properties::ProjectPropertiesActions;
 

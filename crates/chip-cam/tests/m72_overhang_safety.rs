@@ -4,7 +4,7 @@ use std::sync::atomic::AtomicBool;
 
 use chip_cad::{
     CadKernel, MeshImportOptions, MonstertruckKernel, SurfaceKind, find_same_diameter_holes,
-    load_mesh_cad_document, sample_multi_feature_bracket_step,
+    load_mesh_cad_document,
 };
 use chip_cam::{
     AxisAnchor, BoxAnchor27, ChamferSourceMode, ChamferTraceMode, ContourCompensation,
@@ -14,6 +14,7 @@ use chip_cam::{
     ToolContainmentMode, WcsOriginMode, WorkOffsetSlot, drop_cutter_z,
     drop_cutter_z_detailed_with_scratch, generate_operation_toolpath_with_rest,
 };
+use chip_fixtures::sample_multi_feature_bracket_step;
 use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DVec2, DVec3, DisplayUnit, ParamLength};
 use chip_sim::{
     MachineKinematicsConfig, SetupSimulationInput, SimComputeBackendChoice, SimEngineKind,

@@ -4,8 +4,6 @@
 
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 
-use wgpu::util::DeviceExt as _;
-
 use crate::types::ActiveSimBackendInfo;
 
 use super::types::{
@@ -19,12 +17,6 @@ pub(crate) struct MetricsScratchBuffers {
     pub(crate) hist_buf: wgpu::Buffer,
     pub(crate) hist_readback_buf: wgpu::Buffer,
     pub(crate) common_bg: wgpu::BindGroup,
-}
-
-pub(crate) struct TriDexelEmitResources {
-    pub(crate) bgl: wgpu::BindGroupLayout,
-    pub(crate) pipeline: wgpu::ComputePipeline,
-    pub(crate) init_args_buf: wgpu::Buffer,
 }
 
 /// Process-wide serialization lock for `wgpu::Device::create_compute_pipeline` / shader module
@@ -54,7 +46,6 @@ pub struct GpuSimContext {
     pub(crate) tridexel_bgl: wgpu::BindGroupLayout,
     pub(crate) tridexel_pipeline: wgpu::ComputePipeline,
     tridexel_oriented_pipeline: OnceLock<wgpu::ComputePipeline>,
-    tridexel_emit: OnceLock<TriDexelEmitResources>,
     pub(crate) bvh_common_bgl: wgpu::BindGroupLayout,
     pub(crate) bvh_td_bgl: wgpu::BindGroupLayout,
     pub(crate) bvh_cyl_bgl: wgpu::BindGroupLayout,
@@ -116,7 +107,6 @@ impl GpuSimContext {
             tridexel_bgl,
             tridexel_pipeline,
             tridexel_oriented_pipeline: OnceLock::new(),
-            tridexel_emit: OnceLock::new(),
             bvh_common_bgl: bvh.common_bgl,
             bvh_td_bgl: bvh.td_bgl,
             bvh_cyl_bgl: bvh.cyl_bgl,
@@ -254,6 +244,11 @@ impl GpuSimContext {
     }
 
     #[inline]
+    pub fn device_arc(&self) -> &Arc<wgpu::Device> {
+        &self.device
+    }
+
+    #[inline]
     pub fn queue(&self) -> &wgpu::Queue {
         &self.queue
     }
@@ -274,17 +269,9 @@ impl GpuSimContext {
         })
     }
 
-    /// Lazily compiles and caches the viewport-only Tri-Dexel Surface Nets compute pipeline so
-    /// headless CLI/test simulations do not pay its compilation cost unless rendering is requested.
-    pub(crate) fn tridexel_emit_resources(&self) -> &TriDexelEmitResources {
-        self.tridexel_emit.get_or_init(|| {
-            with_pipeline_compile_lock(|| build_tridexel_emit_pipeline(&self.device))
-        })
-    }
-
     /// Synchronously maps `staging_buf` (after a copy command has been submitted to `queue`)
     /// and copies `byte_len` bytes into `dst`.
-    pub(crate) fn readback_bytes(
+    pub fn readback_bytes(
         &self,
         staging_buf: &wgpu::Buffer,
         byte_len: usize,
@@ -536,56 +523,6 @@ fn build_tridexel_oriented_pipeline(
         compilation_options: wgpu::PipelineCompilationOptions::default(),
         cache: None,
     })
-}
-
-fn build_tridexel_emit_pipeline(device: &wgpu::Device) -> TriDexelEmitResources {
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("chip_tridexel_emit_wgsl"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("tridexel_emit.wgsl").into()),
-    });
-
-    // 1 uniform + 6 storage buffers (strictly within WebGPU default limit of 8 storage buffers/stage)
-    let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("chip_td_emit_bgl"),
-        entries: &[
-            uniform_entry(0),        // TriDexelEmitUniforms
-            storage_entry(1, true),  // m_slots (ro)
-            storage_entry(2, true),  // m_counts (ro)
-            storage_entry(3, true),  // t_slots (ro)
-            storage_entry(4, true),  // t_counts (ro)
-            storage_entry(5, false), // out_vertices (rw)
-            storage_entry(6, false), // draw_args (rw atomic)
-        ],
-    });
-
-    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("chip_td_emit_layout"),
-        bind_group_layouts: &[Some(&bgl)],
-        immediate_size: 0,
-    });
-
-    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("chip_td_emit_pipeline"),
-        layout: Some(&layout),
-        module: &shader,
-        entry_point: Some("main"),
-        compilation_options: wgpu::PipelineCompilationOptions::default(),
-        cache: None,
-    });
-
-    // DrawIndirectArgs { vertex_count: 0, instance_count: 1, first_vertex: 0, first_instance: 0 }
-    let init_args: [u32; 4] = [0, 1, 0, 0];
-    let init_args_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("chip_td_emit_init_args"),
-        contents: bytemuck::cast_slice(&init_args),
-        usage: wgpu::BufferUsages::COPY_SRC,
-    });
-
-    TriDexelEmitResources {
-        bgl,
-        pipeline,
-        init_args_buf,
-    }
 }
 
 struct BuiltBvhPipelines {
@@ -1104,7 +1041,7 @@ mod tests {
 
     #[test]
     fn all_compute_wgsl_shaders_have_fxc_safe_return_paths() {
-        let shaders: [(&str, &str); 6] = [
+        let shaders: [(&str, &str); 5] = [
             (
                 "heightfield_sweep.wgsl",
                 include_str!("heightfield_sweep.wgsl"),
@@ -1114,7 +1051,6 @@ mod tests {
                 include_str!("cylindrical_sweep.wgsl"),
             ),
             ("tridexel_sweep.wgsl", include_str!("tridexel_sweep.wgsl")),
-            ("tridexel_emit.wgsl", include_str!("tridexel_emit.wgsl")),
             ("bvh_distance.wgsl", include_str!("bvh_distance.wgsl")),
             ("stock_metrics.wgsl", include_str!("stock_metrics.wgsl")),
         ];

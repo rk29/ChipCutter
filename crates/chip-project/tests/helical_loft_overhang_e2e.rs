@@ -21,10 +21,7 @@
 
 use std::sync::atomic::AtomicBool;
 
-use chip_cad::{
-    MeshImportOptions, load_mesh_bytes, load_mesh_cad_document,
-    sample_helical_flute_shaft_stl_bytes, sample_triple_helix_loft_stl_bytes,
-};
+use chip_cad::{MeshImportOptions, load_mesh_bytes, load_mesh_cad_document};
 use chip_cam::{
     AxisAnchor, BoxAnchor27, GeometrySelectionItem, HeightReference, HeightSpec,
     MachiningBoundaryMode, MotionRole, Operation, OperationGenRequest, OperationKind,
@@ -34,6 +31,7 @@ use chip_cam::{
     StrategyParams, SurfaceCutterProfile, SurfaceMesh3D, ToolContainmentMode, WcsOriginMode,
     WorkOffsetSlot, generate_operation_toolpath_with_rest,
 };
+use chip_fixtures::{sample_helical_flute_shaft_stl_bytes, sample_triple_helix_loft_stl_bytes};
 use chip_math::{DVec2, DisplayUnit, ParamLength};
 use chip_project::{
     ModelEntry, ProjectDocument, SetupSimRequest, SoftJawBoltPattern, SoftJawConfig,

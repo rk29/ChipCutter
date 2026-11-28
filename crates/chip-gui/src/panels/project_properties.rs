@@ -3,11 +3,10 @@
 
 use std::path::Path;
 
+use chip_machines::MachineDefinition;
 use chip_math::DisplayUnit;
 use chip_project::ProjectDocument;
-use chip_tools::{
-    MachineDefinition, MaterialCategory, ProjectMaterialSelection, builtin_workpiece_materials,
-};
+use chip_tools::{MaterialCategory, ProjectMaterialSelection, builtin_workpiece_materials};
 
 use crate::{
     theme::ThemeTokens,
@@ -755,7 +754,7 @@ mod tests {
     #[test]
     fn project_properties_rename_units_machine_summary_and_undo() {
         let ctx = egui::Context::default();
-        let machines = chip_tools::builtin_machine_definitions();
+        let machines = chip_machines::builtin_machine_definitions();
         let mut project = ProjectDocument::new("Original Job");
         project.setups[0].operations.push(Operation::new(
             "op1",
@@ -937,7 +936,7 @@ mod tests {
     #[test]
     fn project_properties_window_opens_full_size_with_zero_creep_for_30_frames() {
         let ctx = egui::Context::default();
-        let machines = chip_tools::builtin_machine_definitions();
+        let machines = chip_machines::builtin_machine_definitions();
         let project = ProjectDocument::new("Size Stability Job");
         let mut state = ProjectPropertiesModalState::default();
         state.open_for_project(&project.project_name);
@@ -995,15 +994,13 @@ mod tests {
 
     #[test]
     fn project_properties_and_inspector_workpiece_material_selection_apply_and_undo() {
-        use chip_tools::{
-            ALUMINUM_6061_T6_ID, ALUMINUM_6063_T5_ID, ProjectMaterialSelection,
-            builtin_carvera_machine,
-        };
+        use chip_machines::builtin_carvera_machine;
+        use chip_tools::{ALUMINUM_6061_T6_ID, ALUMINUM_6063_T5_ID, ProjectMaterialSelection};
 
         use super::show_project_inspector;
 
         let ctx = egui::Context::default();
-        let machines = chip_tools::builtin_machine_definitions();
+        let machines = chip_machines::builtin_machine_definitions();
         let carvera = builtin_carvera_machine();
         let t1 = carvera.tools.iter().find(|t| t.tool_number == 1).unwrap();
 

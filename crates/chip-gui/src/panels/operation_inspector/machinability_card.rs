@@ -503,12 +503,10 @@ pub fn show_passes_machinability_banner(
 mod tests {
     use chip_cad::CadDocument;
     use chip_cam::{Operation, OperationKind, OperationStatus, Setup, StockConfig, WorkOffsetSlot};
+    use chip_machines::builtin_carvera_air_machine;
     use chip_math::{DisplayUnit, ParamLength};
     use chip_project::{ProjectDocument, UndoHistory};
-    use chip_tools::{
-        ALUMINUM_6063_T5_ID, CutterGeometry, ProjectMaterialSelection, ToolLibrary,
-        builtin_carvera_air_machine,
-    };
+    use chip_tools::{ALUMINUM_6063_T5_ID, CutterGeometry, ProjectMaterialSelection, ToolLibrary};
 
     use super::*;
     use crate::{
@@ -519,7 +517,7 @@ mod tests {
         theme::{AppTheme, apply_theme},
     };
 
-    fn make_hazardous_and_safe_project() -> (ProjectDocument, chip_tools::MachineDefinition) {
+    fn make_hazardous_and_safe_project() -> (ProjectDocument, chip_machines::MachineDefinition) {
         let machine = builtin_carvera_air_machine();
         let mut proj = ProjectDocument::new("m96_machinability_ui");
         proj.workpiece_material = Some(ProjectMaterialSelection::builtin(ALUMINUM_6063_T5_ID));

@@ -1,18 +1,40 @@
 use std::path::{Component, Path};
 
-use chip_cam::{
-    GeneratedToolpath, Operation, ResolvedRotaryConfig, ResolvedStockGeometry, WcsConfig,
-    WcsOriginMode, WorkOffsetSlot,
-};
+use chip_cl::{GeneratedToolpath, RotaryUnwindMode, WorkOffsetSlot};
+use chip_math::DVec3;
 use chip_tools::Tool;
 use serde::{Deserialize, Serialize};
 
 use crate::profile::{PostError, PostProfile, ToolChangeMode};
 
+/// Lightweight stock geometry summary needed for post-processor header comments.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PostStockSummary {
+    Box {
+        size_mm: DVec3,
+    },
+    Cylinder {
+        axis_label: char,
+        diameter_mm: f64,
+        length_mm: f64,
+    },
+}
+
+/// Lightweight 4th-axis rotary kinematics summary needed by `chip-post`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PostRotarySetup {
+    pub axis_letter: char,
+    pub axis_label: &'static str,
+    pub mode_label: &'static str,
+    pub stock_outer_radius_mm: f64,
+    pub clearance_radius_mm: f64,
+    pub unwind_mode: RotaryUnwindMode,
+}
+
 /// Single enabled operation + tool + clean toolpath passed to `chip-post`.
 #[derive(Debug, Clone, Copy)]
 pub struct OperationPostInput<'a> {
-    pub op: &'a Operation,
+    pub op_name: &'a str,
     pub tool: &'a Tool,
     pub toolpath: &'a GeneratedToolpath,
 }
@@ -24,8 +46,8 @@ pub struct SetupPostInput<'a> {
     pub setup_name: &'a str,
     pub wcs_slot: WorkOffsetSlot,
     pub wcs_origin_description: String,
-    pub stock: ResolvedStockGeometry,
-    pub rotary: Option<ResolvedRotaryConfig>,
+    pub stock: PostStockSummary,
+    pub rotary: Option<PostRotarySetup>,
     pub clearance_z_wcs: f64,
     pub retract_z_wcs: f64,
     pub operations: Vec<OperationPostInput<'a>>,
@@ -49,23 +71,6 @@ pub(crate) struct PostPartition<'a> {
     pub filename: String,
     pub ops: Vec<OperationPostInput<'a>>,
     pub suppress_m6: bool,
-}
-
-/// Formats a concise human-readable WCS Zero summary for the operator header (`07-post-processor.md`).
-pub fn describe_wcs_origin(wcs: &WcsConfig) -> String {
-    let base = match &wcs.origin {
-        WcsOriginMode::StockBoxPoint { anchor } => format!("Stock {}", anchor.label()),
-        WcsOriginMode::ModelBoxPoint { anchor } => format!("Model {}", anchor.label()),
-        WcsOriginMode::SelectedCadFeature { .. } => "Selected CAD Feature".to_string(),
-    };
-    let dx = wcs.additional_offset_wcs[0].value_mm;
-    let dy = wcs.additional_offset_wcs[1].value_mm;
-    let dz = wcs.additional_offset_wcs[2].value_mm;
-    if dx.abs() > 1e-4 || dy.abs() > 1e-4 || dz.abs() > 1e-4 {
-        format!("{base} (+Offset {dx:+.2}, {dy:+.2}, {dz:+.2} mm)")
-    } else {
-        base
-    }
 }
 
 pub(crate) fn sanitize_filename_slug(raw: &str) -> String {

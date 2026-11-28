@@ -1,0 +1,13 @@
+[package]
+name = "chip-cl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+chip-math.workspace = true
+chip-tools.workspace = true
+serde.workspace = true

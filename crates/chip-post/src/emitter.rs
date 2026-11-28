@@ -1,7 +1,4 @@
-use chip_cam::{
-    ClEvent, CutterCompMode, ResolvedRotaryConfig, ResolvedStockGeometry, WorkOffsetSlot,
-    compute_inverse_time_feed_g93, compute_rotary_angular_feed_deg_min, resolve_rotary_target_deg,
-};
+use chip_cl::{ClEvent, CutterCompMode, RotaryUnwindMode, WorkOffsetSlot};
 use chip_math::DVec3;
 use chip_tools::{CoolantMode, SpindleDirection, Tool};
 
@@ -14,8 +11,15 @@ use crate::{
         LineWriter, ModalState, collapse_spaces, emit_linear_or_rapid, format_decimal,
         format_finite_decimal, sanitize_comment_ascii,
     },
-    partition::{PostOutputFile, PostPartition, SetupPostInput, partition_operations},
+    partition::{
+        PostOutputFile, PostPartition, PostRotarySetup, PostStockSummary, SetupPostInput,
+        partition_operations,
+    },
     profile::{PostError, PostProfile, SwapAxisTarget},
+    rotary::{
+        compute_inverse_time_feed_g93, compute_rotary_angular_feed_deg_min,
+        resolve_rotary_target_deg,
+    },
 };
 
 /// Converts a Setup's clean operations into one or more dialect-specific G-code files (`07-post-processor.md`).
@@ -56,7 +60,7 @@ fn emit_partition(
     let mut prev_tnum: Option<u32> = None;
 
     for item in &part.ops {
-        operation_names.push(item.op.name.clone());
+        operation_names.push(item.op_name.to_string());
         est_time_sec += item.toolpath.stats.total_est_time_sec;
         if let Some(pt) = prev_tnum
             && pt != item.tool.tool_number
@@ -512,29 +516,23 @@ fn emit_structured_header(
     let c_dec = profile.coord_decimals;
 
     let stock_desc = match setup_in.stock {
-        ResolvedStockGeometry::Box { aabb_wcs } => {
-            let sz = aabb_wcs.size();
+        PostStockSummary::Box { size_mm } => {
             format!(
                 "X={}  Y={}  Z={} {u_lbl}",
-                format_decimal(profile.units.scale_from_mm(sz.x), c_dec, false),
-                format_decimal(profile.units.scale_from_mm(sz.y), c_dec, false),
-                format_decimal(profile.units.scale_from_mm(sz.z), c_dec, false),
+                format_decimal(profile.units.scale_from_mm(size_mm.x), c_dec, false),
+                format_decimal(profile.units.scale_from_mm(size_mm.y), c_dec, false),
+                format_decimal(profile.units.scale_from_mm(size_mm.z), c_dec, false),
             )
         }
-        ResolvedStockGeometry::Cylinder {
-            axis,
-            radius_mm,
-            min_axial_mm,
-            max_axial_mm,
-            ..
+        PostStockSummary::Cylinder {
+            axis_label,
+            diameter_mm,
+            length_mm,
         } => {
-            let dia = 2.0 * radius_mm;
-            let len = (max_axial_mm - min_axial_mm).abs();
             format!(
-                "Cyl({:?}) D={}  L={} {u_lbl}",
-                axis,
-                format_decimal(profile.units.scale_from_mm(dia), c_dec, false),
-                format_decimal(profile.units.scale_from_mm(len), c_dec, false),
+                "Cyl({axis_label}) D={}  L={} {u_lbl}",
+                format_decimal(profile.units.scale_from_mm(diameter_mm), c_dec, false),
+                format_decimal(profile.units.scale_from_mm(length_mm), c_dec, false),
             )
         }
     };
@@ -573,7 +571,6 @@ fn emit_structured_header(
     ))?;
     writer.push_comment_text(&format!("Stock:        {stock_desc}"))?;
     if let Some(rot) = setup_in.rotary {
-        let mode_str = rot.mode.label();
         let clr_r = format_decimal(
             profile.units.scale_from_mm(rot.clearance_radius_mm),
             c_dec,
@@ -581,9 +578,7 @@ fn emit_structured_header(
         );
         writer.push_comment_text(&format!(
             "Rotary 4th:   {}-Axis ({}) | {} | Clearance R={clr_r}{u_lbl}",
-            rot.axis_letter,
-            rot.axis.label(),
-            mode_str
+            rot.axis_letter, rot.axis_label, rot.mode_label
         ))?;
     }
     writer.push_comment_text(&format!("Safe Z:       {safe_z_desc}"))?;
@@ -639,9 +634,9 @@ fn resolve_wcs_code(
 }
 
 fn effective_unwind_mode(
-    setup_rotary: Option<&ResolvedRotaryConfig>,
+    setup_rotary: Option<&PostRotarySetup>,
     profile: &PostProfile,
-) -> chip_cam::RotaryUnwindMode {
+) -> RotaryUnwindMode {
     setup_rotary
         .map(|r| r.unwind_mode)
         .unwrap_or(profile.rotary.unwind_mode)

@@ -1,9 +1,9 @@
-use chip_post::load_available_post_profiles;
-use chip_tools::{
+use chip_machines::{
     MachineDefinition, MachineRotaryDefaults, MachineToolChangeKind,
     allocate_unique_custom_machine_id, clone_machine_definition, delete_user_machine,
     export_machine_to_path, import_machine_from_path, save_user_machine,
 };
+use chip_post::load_available_post_profiles;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MachineEditorTab {
@@ -68,10 +68,10 @@ impl MachineManagerModalState {
     fn persist_machine(
         &self,
         machine: &MachineDefinition,
-    ) -> Result<std::path::PathBuf, chip_tools::MachineStorageError> {
+    ) -> Result<std::path::PathBuf, chip_machines::MachineStorageError> {
         #[cfg(test)]
         if let Some(dir) = &self.custom_save_dir {
-            return chip_tools::save_user_machine_in(machine, dir);
+            return chip_machines::save_user_machine_in(machine, dir);
         }
         save_user_machine(machine)
     }
@@ -1178,7 +1178,7 @@ fn format_shank_mm(dia_mm: f64) -> String {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use chip_tools::{MachineDefinition, builtin_generic_machine, clone_machine_definition};
+    use chip_machines::{MachineDefinition, builtin_generic_machine, clone_machine_definition};
 
     use super::{MachineManagerActions, MachineManagerModalState};
 

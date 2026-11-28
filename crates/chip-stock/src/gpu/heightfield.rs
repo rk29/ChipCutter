@@ -9,13 +9,13 @@ use wgpu::util::DeviceExt as _;
 use crate::{
     backend::StockCheckpointSnapshot,
     heightfield::HeightfieldStock,
-    types::{BatchSweepOutput, SimMeshOptions, SweepChord, SweepMotion, SweepToolSpec},
+    types::{BatchSweepOutput, SweepChord, SweepMotion, SweepToolSpec},
 };
 
 use super::{
     checkpoints::GpuCheckpointBuffers,
     context::{GpuSimContext, GrowableStorageBuffer},
-    render_handle::{GpuHeightfieldRenderData, GpuStockRenderHandle},
+    snapshot::{GpuHeightfieldBuffers, GpuStockBufferSnapshot},
     types::{GPU_TILE_SIZE, GpuSweepChord, GpuToolProfile, GpuViolationAccum, HeightfieldUniforms},
 };
 
@@ -499,17 +499,8 @@ impl GpuHeightfieldState {
     }
 
     /// Captures a read-only GPU storage-buffer snapshot (`copy_buffer_to_buffer` into a pooled
-    /// `Arc<wgpu::Buffer>` pair) for zero-readback direct viewport rendering.
-    pub(crate) fn capture_render_handle(&mut self) -> Arc<GpuStockRenderHandle> {
-        self.capture_render_handle_with_options(SimMeshOptions::default())
-    }
-
-    /// Captures a read-only GPU storage-buffer snapshot for direct viewport rendering (heightfield
-    /// `mesh_skinning` is evaluated live in `vs_sim_heightfield_gpu` via `SimStockVisualUniforms`).
-    pub(crate) fn capture_render_handle_with_options(
-        &mut self,
-        _options: SimMeshOptions,
-    ) -> Arc<GpuStockRenderHandle> {
+    /// `Arc<wgpu::Buffer>` pair) for zero-readback downstream presentation or inspection.
+    pub(crate) fn capture_buffer_snapshot(&mut self) -> Arc<GpuStockBufferSnapshot> {
         let cell_bytes = ((self.nx * self.ny) * std::mem::size_of::<f32>()) as u64;
         let (snap_z, snap_op) = if let Some((z, op)) = self
             .render_snap_pool
@@ -548,24 +539,22 @@ impl GpuHeightfieldState {
             self.ctx.queue().submit(std::iter::once(encoder.finish()));
         }
 
-        Arc::new(GpuStockRenderHandle::Heightfield(
-            GpuHeightfieldRenderData {
-                nx: self.nx as u32,
-                ny: self.ny as u32,
-                origin_wcs: [
-                    self.origin_wcs.x as f32,
-                    self.origin_wcs.y as f32,
-                    self.origin_wcs.z as f32,
-                ],
-                dx_mm: self.dx_mm as f32,
-                dy_mm: self.dy_mm as f32,
-                has_target: self.has_target,
-                z_stock_buf: snap_z,
-                z_bottom_buf: Arc::clone(&self.z_bottom_buf),
-                z_target_buf: Arc::clone(&self.z_target_buf),
-                last_op_buf: snap_op,
-            },
-        ))
+        Arc::new(GpuStockBufferSnapshot::Heightfield(GpuHeightfieldBuffers {
+            nx: self.nx as u32,
+            ny: self.ny as u32,
+            origin_wcs: [
+                self.origin_wcs.x as f32,
+                self.origin_wcs.y as f32,
+                self.origin_wcs.z as f32,
+            ],
+            dx_mm: self.dx_mm as f32,
+            dy_mm: self.dy_mm as f32,
+            has_target: self.has_target,
+            z_stock_buf: snap_z,
+            z_bottom_buf: Arc::clone(&self.z_bottom_buf),
+            z_target_buf: Arc::clone(&self.z_target_buf),
+            last_op_buf: snap_op,
+        }))
     }
 
     pub(crate) fn checkpoint_byte_size(&self) -> usize {

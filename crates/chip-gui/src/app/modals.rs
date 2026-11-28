@@ -238,11 +238,11 @@ impl ChipCutterApp {
                 .cloned()
             {
                 let existing: Vec<String> = self.machines.iter().map(|m| m.id.clone()).collect();
-                let new_id = chip_tools::allocate_unique_custom_machine_id(&src.id, &existing);
+                let new_id = chip_machines::allocate_unique_custom_machine_id(&src.id, &existing);
                 let new_name = format!("{} (Custom)", src.name);
-                match chip_tools::clone_machine_definition(&src, &new_id, &new_name).and_then(
+                match chip_machines::clone_machine_definition(&src, &new_id, &new_name).and_then(
                     |cloned| {
-                        chip_tools::save_user_machine(&cloned)?;
+                        chip_machines::save_user_machine(&cloned)?;
                         Ok(cloned)
                     },
                 ) {
@@ -273,7 +273,7 @@ impl ChipCutterApp {
             {
                 m.tools = self.global_tools.tools.clone();
                 m.sort_tools_deterministically();
-                if let Err(err) = chip_tools::save_user_machine(m) {
+                if let Err(err) = chip_machines::save_user_machine(m) {
                     self.modals.tool_library.status_banner =
                         Some(format!("Save machine tools failed: {err}"));
                 }

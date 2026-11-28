@@ -18,7 +18,9 @@ chip-cam.workspace = true
 chip-math.workspace = true
 chip-stock.workspace = true
 chip-tools.workspace = true
+chip-machines.workspace = true
 serde.workspace = true
 
 [dev-dependencies]
+chip-fixtures.workspace = true
 chip-sketch.workspace = true

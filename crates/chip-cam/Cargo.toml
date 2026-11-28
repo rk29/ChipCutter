@@ -15,9 +15,12 @@ chip-cad.workspace = true
 chip-sketch.workspace = true
 chip-stock.workspace = true
 chip-tools.workspace = true
+chip-machines.workspace = true
+chip-cl.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 rayon.workspace = true
 
 [dev-dependencies]
+chip-fixtures.workspace = true
 chip-sim.workspace = true

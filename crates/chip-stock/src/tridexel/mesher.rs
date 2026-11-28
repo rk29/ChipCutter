@@ -2,11 +2,9 @@ use chip_math::DVec3;
 use rayon::prelude::*;
 
 use crate::{
-    mesher_common::op_color,
-    metrics::{
-        SimStockColorMode, deviation_to_heatmap_rgba, signed_deviation_at_machined_endpoint,
-    },
+    metrics::signed_deviation_at_machined_endpoint,
     types::{Axis3, SimColoredVertex, SimMeshOptions, SimStockMesh, UNCUT_OP_IDX},
+    visual::{SimStockColorMode, deviation_to_heatmap_rgba, op_color},
 };
 
 use super::grid::{DexelSpan, TriDexelStock};
@@ -1045,8 +1043,8 @@ pub fn tessellate_tridexel_stock_mesh_with_options(
                     && !matches!(color_mode, SimStockColorMode::ErrorHeatmap { .. })
                 {
                     let top_blend = ((nc.z.abs() as f32 - 0.70) / 0.25).clamp(0.0, 1.0);
-                    let side = crate::mesher_common::RAW_STOCK_SIDE_COLOR;
-                    let top = crate::mesher_common::RAW_STOCK_TOP_COLOR;
+                    let side = crate::visual::RAW_STOCK_SIDE_COLOR;
+                    let top = crate::visual::RAW_STOCK_TOP_COLOR;
                     [
                         side[0] + (top[0] - side[0]) * top_blend,
                         side[1] + (top[1] - side[1]) * top_blend,

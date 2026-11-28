@@ -3,8 +3,9 @@
 
 use std::collections::BTreeMap;
 
+use chip_machines::MachineDefinition;
 use chip_project::{MachineToolSwapPlan, ToolSwapChoice};
-use chip_tools::{MachineDefinition, ToolId};
+use chip_tools::ToolId;
 use egui::{CornerRadius, Stroke};
 
 use crate::theme::{AppTheme, ThemeTokens};

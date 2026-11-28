@@ -397,7 +397,7 @@ fn same_angle_indexed_2d_rest_preserves_exact_2d_swept_coverage() {
     // Two sequential Indexed3Plus1 ops at the SAME 90° angle: Ø8 rough -> Ø3 rest cleanup.
     // Must use exact 2D `swept_toolpath_coverage_2d` (no cross-angle Tri-Dexel carryover needed)
     // and cut drastically less than a full Ø3 pocket clear!
-    let step = chip_cad::sample_multi_feature_bracket_step(false).unwrap();
+    let step = chip_fixtures::sample_multi_feature_bracket_step(false).unwrap();
     let raw_doc = chip_cad::MonstertruckKernel
         .load_step_bytes(
             "bracket.step",

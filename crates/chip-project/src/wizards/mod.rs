@@ -371,10 +371,8 @@ pub(super) fn validate_finite_wiz(name: &str, field: &str, v: f64) -> Result<f64
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use chip_cad::{
-        CadKernel, MeshImportOptions, MonstertruckKernel, load_mesh_bytes,
-        sample_multi_feature_bracket_step, sample_sculpted_dome_stl_bytes,
-    };
+    use chip_cad::{CadKernel, MeshImportOptions, MonstertruckKernel, load_mesh_bytes};
+    use chip_fixtures::{sample_multi_feature_bracket_step, sample_sculpted_dome_stl_bytes};
     use chip_math::{DEFAULT_TESS_CHORD_TOL_MM, DisplayUnit};
 
     use super::*;
