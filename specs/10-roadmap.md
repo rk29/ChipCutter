@@ -625,7 +625,7 @@ Brings real-world cutting physics, tool-breakage protection, and in-viewport geo
 
 ---
 
-## Phase 27 — Workspace Architecture Refactoring, Clean Crate Boundaries, & De-Monolithing (Planned — M97–M100)
+## Phase 27 — Workspace Architecture Refactoring, Clean Crate Boundaries, & De-Monolithing (Completed — M97–M100)
 
 Refactors the workspace across all crates to eliminate cross-crate misplacement, duplicated geometry/envelope/workflow logic, and heavyweight transitive dependency leaks—extracting four focused crates (`chip-cl`, `chip-fixtures`, `chip-demos`, `chip-machines`), moving non-UI domain logic out of `chip-gui` and `chip-cli`, separating viewport GPU presentation from `chip-stock`/`chip-sim`, and decomposing oversized production monoliths and inline test blocks while strictly preserving 100% lossless `.chip.toml` compatibility, zero new external dependencies, and byte-for-byte golden G-code parity.
 

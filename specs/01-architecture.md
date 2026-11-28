@@ -4,46 +4,51 @@
 1. **UI-Agnostic Core, Feature-Gated GPU Compute, & Safety Lints:** All CAD loading, spatial BVH indexing, exact 2D geometry, 2D sketch/vector processing, volumetric stock kernels, coordinate transforms, toolpath generation, simulation, and post-processing live in standalone Rust 2024 library crates with zero `egui` dependency. `chip-stock`, `chip-sim`, and `chip-project` remain 100% pure-CPU by default (zero `wgpu` dependency), exposing an optional `gpu-compute` feature (`dep:wgpu` + `dep:pollster` in `chip-stock`, propagated through `chip-sim` and `chip-project`, and enabled by default in `chip-cli` and `chip-gui`, including `chip-gui`'s `flatpak-portal` feature) that automatically falls back to exact CPU execution whenever no compute adapter is available. Both the desktop GUI (`chip-gui`) and headless CLI (`chipcutter`) consume the exact same engine, and workspace lints enforce `unsafe_code = "deny"`, `clippy::unwrap_used = "deny"`, and `clippy::expect_used = "deny"` across all crates (with a single localized `#[allow(unsafe_code)]` in `chip-gui/src/linux_gsettings.rs` for Rust 2024 process-startup `std::env::set_var`).
 2. **Canonical `f64` Millimeter Kernel:** Every internal coordinate, vector, tolerance, arc radius, and feedrate (`mm/min`) is stored and computed in `f64` millimeters. Unit conversion happens strictly at UI display/input boundaries, DXF/SVG/mesh import boundaries, and post-processor emission (`G20` vs `G21`).
 3. **True Arc Preservation & Typed CL Boundary:** 2D boundaries, Bézier biarc fits (`kurbo`), parallel offsets (`cavalier_contours` via `chip-geom2d`), trochoidal peel arcs, helical bores, helical thread mills, and lead-ins preserve analytic line and circular arc segments (`ArcPolyline2D`) all the way through the typed `ClEvent` Cutter Location IR (`chip-cam` never emits G-code strings) so controllers receive smooth `G2`/`G3` moves via `chip-post`.
-4. **CAD-Agnostic Strategy & Stock Boundaries:** `CadKernel` isolates `monstertruck-*` strictly inside `chip-cad`. `chip-cam` 2.5D strategies operate exclusively on canonical WCS `ExtractedFeature25D` geometry—never directly on 3D `CadDocument` topology—allowing 3D STEP B-Rep selections and 2D `chip-sketch` vector/text entities to share identical machining algorithms. Likewise, `chip-stock` volumetric stock kernels depend only on `chip-math`, `chip-bvh`, and `chip-tools` (zero `chip-cad` or `chip-cam` dependency), enabling `chip-cam` to consume `TriDexelStock` directly for multi-setup (`G54` → `G55`) and in-setup indexed rotary 3D rest carryover without creating a `chip-cam` ↔ `chip-sim` runtime cycle (`chip-sim` is a `dev-dependency` of `chip-cam` for test verification only).
-5. **GPU-Compute Flat Data Layouts, Device Isolation, & Direct GPU Stock Rendering:** Spatial BVH nodes (`FlatBvhNode` 32-byte `Pod`, `GpuTriangle` 48-byte `Pod` in `chip-bvh`), volumetric stock buffers (flat fixed-`K = 4` `FlatDexelSpan` pools with rare overflow side-table in `TriDexelStock`, stock-local `f32` heightfield/cylindrical grids, `u32` operation provenance tags in `chip-stock`), and simulation mesh vertices (`SimColoredVertex` `#[repr(C)] bytemuck::Pod`) use tightly-packed GPU-compatible layouts. `chip-sim` drives stock updates through the batched `SimStockBackend` trait (`CpuExactBackend` and optional `gpu-compute` `WgpuComputeBackend`). To keep `eframe`'s presentation `wgpu::Device` strictly main-thread-only (preventing `Surface::configure` resize timeouts), background compute sweeps run on an isolated headless `GpuSimContext::shared_headless()`, while `chip-gui` consumes `SimStockRenderSource`:
-   - `SimStockRenderSource::GpuGrid { revision, handle, stock_model, color_mode, mesh_skinning }` uploads flat stock snapshots onto the main-thread presentation `GpuSimContext::from_shared` via `GpuStockRenderHandle::from_simulated_stock` (zero CPU mesh tessellation) and renders Heightfield/Cylindrical grids procedurally in WGSL vertex shaders and Tri-Dexel surfaces via GPU compute `tridexel_emit.wgsl` → compact 32-byte `PackedTriDexelQuad` + `draw_indirect`, with `< 0.1 ms` `SimStockVisualUniformsGpu` updates (and `< 0.3 ms` Tri-Dexel GPU re-emission) on color mode, `±tol` Error Heatmap, or crease-preserving `mesh_skinning` changes.
+4. **CAD-Agnostic Strategy & Stock Boundaries:** `CadKernel` isolates `monstertruck-*` strictly inside `chip-cad` (with `monstertruck-modeling` isolated in `chip-fixtures` for synthetic test/sample geometry). `chip-cam` 2.5D strategies operate exclusively on canonical WCS `ExtractedFeature25D` geometry—never directly on 3D `CadDocument` topology—allowing 3D STEP B-Rep selections and 2D `chip-sketch` vector/text entities to share identical machining algorithms. Likewise, `chip-stock` volumetric stock kernels depend only on `chip-math`, `chip-bvh`, and lean core `chip-tools` (zero `chip-cad`, `chip-cam`, `chip-machines`, `dirs`, `zip`, or `serde_json` dependency), enabling `chip-cam` to consume `TriDexelStock` directly for multi-setup (`G54` → `G55`) and in-setup indexed rotary 3D rest carryover without creating a `chip-cam` ↔ `chip-sim` runtime cycle (`chip-sim` is a `dev-dependency` of `chip-cam` for test verification only). Typed Cutter Location IR (`ClEvent`, `GeneratedToolpath`, `ToolpathBuilder`, `WorkOffsetSlot`, `RotaryUnwindMode`) lives in lightweight `chip-cl`, completely severing `chip-post` from `chip-cam` and the CAD/geometry stack.
+5. **GPU-Compute Flat Data Layouts, Device Isolation, & Direct GPU Stock Rendering:** Spatial BVH nodes (`FlatBvhNode` 32-byte `Pod`, `GpuTriangle` 48-byte `Pod` in `chip-bvh`), volumetric stock buffers (flat fixed-`K = 4` `FlatDexelSpan` pools with rare overflow side-table in `TriDexelStock`, stock-local `f32` heightfield/cylindrical grids, `u32` operation provenance tags in `chip-stock`), and simulation mesh vertices (`SimColoredVertex` `#[repr(C)] bytemuck::Pod`) use tightly-packed GPU-compatible layouts. `chip-sim` drives stock updates through the batched `SimStockBackend` trait (`CpuExactBackend` and optional `gpu-compute` `WgpuComputeBackend`), while `chip-stock::gpu` exposes raw read-only `GpuStockBufferSnapshot` buffer handles with zero viewport shaders or quad-packing logic. To keep `eframe`'s presentation `wgpu::Device` strictly main-thread-only (preventing `Surface::configure` resize timeouts), background compute sweeps run on an isolated headless `GpuSimContext::shared_headless()`, while `chip-gui` (`viewport/sim_gpu_render/` + `viewport/tool_mesh.rs`) owns viewport GPU stock/cutter presentation and consumes `SimStockRenderSource`:
+   - `SimStockRenderSource::GpuGrid { revision, handle, stock_model, color_mode, mesh_skinning }` uploads flat stock snapshots onto the main-thread presentation `GpuSimContext::from_shared` via `chip-gui`'s `GpuStockRenderHandle::from_simulated_stock` (zero CPU mesh tessellation) and renders Heightfield/Cylindrical grids procedurally in WGSL vertex shaders and Tri-Dexel surfaces via GPU compute `viewport/sim_gpu_render/tridexel_emit.wgsl` → compact 32-byte `PackedTriDexelQuad` + `draw_indirect` (co-located directly alongside `viewport/shaders.wgsl`), with `< 0.1 ms` `SimStockVisualUniformsGpu` updates (and `< 0.3 ms` Tri-Dexel GPU re-emission) on color mode, `±tol` Error Heatmap, or crease-preserving `mesh_skinning` changes.
    - `SimStockRenderSource::CpuMesh { revision, mesh, stock_model }` uploads CPU-tessellated meshes via `GrowableSimIndexedMeshGpu` (reusable vertex/index `GrowableGpuBuffer` pools) with GPU `stock_model` rotary transforms when running `CpuExactBackend`.
-6. **Explicit Dirty-State, DAG Computation, & Non-Blocking UI:** Document edits mutate lightweight parametric specs instantly (enabling 100-step `< 1 ms` coalescing Undo/Redo via `UndoHistory` with zero idle document clones) and mark dependent operations—including downstream `FromPrecedingOperations` rest consumers and multi-setup / indexed rotary `TriDexelStock` carryover consumers—`Dirty`. Heavy toolpath generation runs only on explicit user action (`Ctrl+G` or CLI `build`) over a `rayon` thread pool with `Arc<AtomicBool>` cancellation tokens, and interactive simulation stock scrubbing/remeshing runs on a coalescing background `StockRemeshWorker` off the `egui` UI thread.
-7. **Permissive Dependency Hygiene & Read-Only Built-In Presets:** Enforced via `cargo-deny` (`deny.toml` allows `MIT`, `MIT-0`, `Apache-2.0`, `Apache-2.0 WITH LLVM-exception`, `BSD-2-Clause`, `BSD-3-Clause`, `ISC`, `Zlib`, `MPL-2.0`, `Unicode-3.0`, `Unicode-DFS-2016`, `CC0-1.0`, `BSL-1.0`, `0BSD`, plus the `epaint_default_fonts` font exception `OFL-1.1` / `Ubuntu-font-1.0`; `GPL`/`LGPL`/`AGPL` and wildcard dependencies are denied, and workspace unmaintained advisories are checked). Compiled-in machine definitions and post-processor profiles are strictly read-only and cannot be shadowed by project or user files; user customizations live in OS user config space (`dirs::config_dir()/chipcutter/`).
+6. **Explicit Dirty-State, DAG Computation, & Non-Blocking UI:** Document edits mutate lightweight parametric specs instantly via headless `chip-project::mutations` (enabling 100-step `< 1 ms` coalescing Undo/Redo via `UndoHistory` with zero idle document clones) and mark dependent operations—including downstream `FromPrecedingOperations` rest consumers and multi-setup / indexed rotary `TriDexelStock` carryover consumers—`Dirty`. Heavy toolpath generation runs only on explicit user action (`Ctrl+G` or CLI `build`) over a `rayon` thread pool with `Arc<AtomicBool>` cancellation tokens, and interactive simulation stock scrubbing/remeshing runs on a coalescing background `StockRemeshWorker` off the `egui` UI thread.
+7. **Permissive Dependency Hygiene & Read-Only Built-In Presets:** Enforced via `cargo-deny` (`deny.toml` allows `MIT`, `MIT-0`, `Apache-2.0`, `Apache-2.0 WITH LLVM-exception`, `BSD-2-Clause`, `BSD-3-Clause`, `ISC`, `Zlib`, `MPL-2.0`, `Unicode-3.0`, `Unicode-DFS-2016`, `CC0-1.0`, `BSL-1.0`, `0BSD`, plus the `epaint_default_fonts` font exception `OFL-1.1` / `Ubuntu-font-1.0`; `GPL`/`LGPL`/`AGPL` and wildcard dependencies are denied, and workspace unmaintained advisories are checked). Compiled-in machine definitions (`chip-machines`) and post-processor profiles (`chip-post`) are strictly read-only and share unified `PresetStore` user-config storage (`chip-tools/user-config`) so they cannot be shadowed by project or user files and application upgrades update them cleanly; user customizations live in OS user config space (`dirs::config_dir()/chipcutter/`).
 
 ---
 
-## Cargo Workspace Layout (13 Crates)
+## Cargo Workspace Layout (17 Crates)
 ```text
 ChipCutter/
-├── Cargo.toml                  # Workspace root, lints, & shared dependency versions (13 crates, Rust 2024)
+├── Cargo.toml                  # Workspace root, lints, & shared dependency versions (17 crates, Rust 2024)
 ├── deny.toml                   # License, wildcard, & advisory enforcement
 ├── specs/                      # Living design specifications
 ├── plans/                      # Sequential milestone implementation plans (`<nn>-milestone-<nn>-plan.md`)
 ├── posts/                      # 6 built-in TOML post-processor profiles (grbl, grbl_rotary_wrap, grblhal_atc, grblhal_4axis, linuxcnc, linuxcnc_4axis)
 ├── machines/                   # 7 built-in TOML machine definitions (generic, milo-1.5, milo-2.0, voron-cascade, carvera, carvera-air, carvera-z1)
 └── crates/
-    ├── chip-math/              # Canonical f64 mm units, tolerances, RigidFrame3, 2D line/arc primitives, expression parser
-    ├── chip-bvh/               # Pure flat-array binary SAH BVH (FlatBvhNode/GpuTriangle Pod), TriMesh3D & SegmentBvh spatial queries
-    ├── chip-geom2d/            # Pure exact 2D arc-polyline offsetting, RegionSet2D booleans/sweeps/nesting, Voronoi medial axis, RDP
-    ├── chip-tools/             # 10 CutterGeometry variants, AnalyticCutterEnvelope, SFM/chipload presets, 7 built-in machines, Fusion 360 importer
-    ├── chip-cad/               # CadKernel trait, `monstertruck` STEP + periodic-seam loader, STL/OBJ/3MF loaders, ModelTransform, B-Rep topology, BVH picking, rematch
+    ├── chip-math/              # Canonical f64 mm units, tolerances, RigidFrame3, 2D/3D geometry, binary grid contours, STL encoding, cycle-time formatting, expression parser
+    ├── chip-bvh/               # Pure flat-array binary SAH BVH (FlatBvhNode/GpuTriangle Pod), TriMesh3D, Z-slab clipping, SegmentBvh spatial queries
+    ├── chip-geom2d/            # Pure exact 2D arc-polyline offsetting, RegionSet2D booleans/sweeps/nesting, Voronoi medial axis, triangulation, marching squares, convex hull, RDP
+    ├── chip-tools/             # 10 CutterGeometry variants, AnalyticCutterEnvelope, ToolAssemblyEnvelope, thread tables, SFM/chipload presets, workpiece materials, optional `user-config` PresetStore & `fusion-import`
+    ├── chip-machines/          # MachineDefinition, kinematics/spindle/travel/rotary specs, 7 built-in machines, OS user machine preset storage
+    ├── chip-cl/                # Typed Cutter Location IR (ClEvent, GeneratedToolpath, ToolpathBuilder, WorkOffsetSlot, RotaryUnwindMode) — zero CAD/CAM dependency
+    ├── chip-fixtures/          # Synthetic STEP/STL/OBJ/3MF/DXF/SVG sample & test geometry generators (`monstertruck-modeling` isolated here)
+    ├── chip-cad/               # CadKernel trait, `monstertruck` STEP + periodic-seam loader, STL/OBJ/3MF loaders, unified model loader, ModelTransform, B-Rep topology & measurement, BVH picking, rematch
     ├── chip-sketch/            # 2D Sketch Layers, parametric shapes, DXF/SVG importers, gap-healing, TrueType (`skrifa`) & Hershey text, snapping
-    ├── chip-stock/             # Pure volumetric stock kernels (HeightfieldStock, TriDexelStock + rigid transfer, CylindricalStock), GPU BVH/metrics/emit, SimStockBackend
-    ├── chip-cam/               # Setups, WCS, 18 strategies (2.5D, 3D Surface, Undercut/Deburr, ThreadMill, 4-Axis Rotary), 3D workholding & safe-rapid avoidance, Flip-Jig/Soft-Jaw wizards, feed optimization, ClEvent IR
-    ├── chip-sim/               # Simulation driver, SimProgressTracker, stage timing, trapezoidal timeline, CAD target adapters, 3D cutter mesh, 6-rule verifier (incl. FixtureCollision)
-    ├── chip-post/              # 6 built-in + user TOML post profiles, modal state machine, G93/G94, swapped-axis wrap, quadrant-arc/drill expansion, comment sanitization
-    ├── chip-project/           # `.chip.toml` (schema_version = 3, auto-migrating v1/v2) & `.chipz` archives, associative reload, multi-setup/rotary carryover pipeline, DAG JobDispatcher, ToolpathCache, UndoHistory, demos
+    ├── chip-stock/             # Pure volumetric stock kernels (HeightfieldStock, TriDexelStock + rigid transfer, CylindricalStock), GPU BVH/metrics/compute sweeps & raw buffer snapshots, SimStockBackend
+    ├── chip-cam/               # Setups, WCS, 18 strategies (2.5D, 3D Surface, Undercut/Deburr, ThreadMill, 4-Axis Rotary), boundary preview, 3D workholding & fixture avoidance, cutting physics & machinability advisor, reach analysis, strategy validation, feed optimization
+    ├── chip-sim/               # Simulation driver, SimProgressTracker, stage timing, trapezoidal timeline, CAD target adapters, 6-rule verifier (incl. FixtureCollision)
+    ├── chip-post/              # 6 built-in + user TOML post profiles, modal state machine, rotary G93/G94/unwind math, swapped-axis wrap, quadrant-arc/drill expansion, comment sanitization (depends on `chip-cl`, zero `chip-cam` dep)
+    ├── chip-project/           # `.chip.toml` (schema_version = 3, auto-migrating v1/v2) & `.chipz` archives, headless mutations & Flip-Jig/Soft-Jaw wizards, associative reload, multi-setup/rotary carryover pipeline, DAG JobDispatcher, ToolpathCache, UndoHistory
+    ├── chip-demos/             # Declarative SampleCatalog / SampleId registry and all built-in tutorial & sample project builders
     ├── chip-cli/               # Headless CLI binary (`chipcutter`, 14 subcommands, default `gpu-compute` with CPU fallback)
-    └── chip-gui/               # `eframe` + `wgpu` + `egui_tiles` desktop app (`gtk3` + `gpu-compute` default, `flatpak-portal`), ViewportRenderer, off-thread StockRemeshWorker, `prefs.toml`, headless `--capture-*`
+    └── chip-gui/               # `eframe` + `wgpu` + `egui_tiles` desktop app (`gtk3` + `gpu-compute` default, `flatpak-portal`), ViewportRenderer, GPU stock emit & 3D cutter presentation (`viewport/sim_gpu_render/`, `viewport/tool_mesh.rs`), off-thread StockRemeshWorker, `prefs.toml`, headless `--capture-*`
 ```
 
 **Feature Flags:**
+- `chip-tools`: `default = []`, `user-config = ["dep:dirs"]`, `fusion-import = ["dep:serde_json", "dep:zip"]`
 - `chip-stock`: `default = []`, `gpu-compute = ["dep:wgpu", "dep:pollster"]`
 - `chip-sim`: `default = []`, `gpu-compute = ["chip-stock/gpu-compute"]`
 - `chip-project`: `default = []`, `gpu-compute = ["chip-sim/gpu-compute"]`
 - `chip-cli`: `default = ["gpu-compute"]`, `gpu-compute = ["chip-sim/gpu-compute", "chip-project/gpu-compute"]`
-- `chip-gui`: `default = ["gtk3", "gpu-compute"]`, `gtk3 = ["rfd/gtk3"]`, `flatpak-portal = ["rfd/xdg-portal", "rfd/async-std", "gpu-compute"]`, `gpu-compute = ["chip-sim/gpu-compute", "chip-project/gpu-compute"]`
+- `chip-gui`: `default = ["gtk3", "gpu-compute"]`, `gtk3 = ["rfd/gtk3"]`, `flatpak-portal = ["rfd/xdg-portal", "rfd/async-std", "gpu-compute"]`, `gpu-compute = ["chip-stock/gpu-compute", "chip-sim/gpu-compute", "chip-project/gpu-compute"]`
 
 ---
 
@@ -51,61 +56,86 @@ ChipCutter/
 ```mermaid
 flowchart TB
     subgraph L6["Layer 6 — Applications"]
-        GUI["chip-gui\nDesktop App (eframe / egui / wgpu)"]
+        GUI["chip-gui\nDesktop App (eframe / egui / wgpu · GPU Stock/Cutter Presentation)"]
         CLI["chip-cli\nHeadless CLI (chipcutter)"]
     end
 
+    subgraph L55["Layer 5.5 — Samples & Tutorials"]
+        DEMOS["chip-demos\nSampleCatalog · Built-In Project Builders"]
+    end
+
     subgraph L5["Layer 5 — Project & Pipeline Orchestration"]
-        PROJECT["chip-project\n.chip.toml / .chipz · JobDispatcher · Cache · UndoHistory · Reload"]
+        PROJECT["chip-project\n.chip.toml / .chipz · Mutations · Wizards · JobDispatcher · Cache · UndoHistory · Reload"]
     end
 
     subgraph L4["Layer 4 — Simulation & Post-Processing"]
         SIM["chip-sim\nSimulation Driver · 6-Rule Verifier · Timeline"]
-        POST["chip-post\n.post.toml Profiles · G-Code Emitter"]
+        POST["chip-post\n.post.toml Profiles · G-Code Emitter (NO chip-cam dep)"]
     end
 
     subgraph L3["Layer 3 — CAM Toolpath Engine"]
-        CAM["chip-cam\nSetups · WCS · 18 Strategies · Fixtures · Keep-Outs · ClEvent IR"]
+        CAM["chip-cam\nSetups · WCS · 18 Strategies · Boundary Preview · Physics & Advisor · Fixtures · Keep-Outs"]
     end
 
-    subgraph L2["Layer 2 — Domain Geometry & Volumetric Stock"]
-        CAD["chip-cad\nSTEP / STL / OBJ / 3MF · B-Rep"]
+    subgraph L2["Layer 2 — Domain Geometry, Volumetric Stock, CL IR, & Machines"]
+        CAD["chip-cad\nSTEP / STL / OBJ / 3MF · B-Rep · Measurement"]
         SKETCH["chip-sketch\n2D Sketches · DXF / SVG · Text"]
         STOCK["chip-stock\nHeightfield · Tri-Dexel · Cylindrical"]
+        CL["chip-cl\nClEvent · Toolpath · WorkOffsetSlot"]
+        MACHINES["chip-machines\n7 Built-In Machines · User Storage"]
     end
 
-    subgraph L1["Layer 1 — Spatial, 2D Kernel, & Tooling Primitives"]
+    subgraph L1["Layer 1 — Spatial, 2D Kernel, Tooling Primitives, & Raw Fixtures"]
         BVH["chip-bvh\nFlat SAH BVH · TriMesh3D"]
-        GEOM2D["chip-geom2d\nExact 2D Offsets · Booleans"]
-        TOOLS["chip-tools\nCutters · Envelopes · Machines"]
+        GEOM2D["chip-geom2d\nExact 2D Offsets · Booleans · Triangulation"]
+        TOOLS["chip-tools\nCutters · Envelopes · Threads · Materials"]
+        FIXTURES["chip-fixtures\nSynthetic STEP / Mesh / Vector Generators"]
     end
 
     subgraph L0["Layer 0 — Foundation"]
         MATH["chip-math\nCanonical f64 mm · Units · RigidFrame3 · ArcPolyline2D · Expressions"]
     end
 
+    GUI --> DEMOS
     GUI --> PROJECT
+    GUI --> STOCK
+    CLI --> DEMOS
     CLI --> PROJECT
+
+    DEMOS --> PROJECT
+    DEMOS --> FIXTURES
 
     PROJECT --> SIM
     PROJECT --> POST
+    PROJECT --> MACHINES
 
     SIM --> CAM
-    POST --> CAM
+    SIM --> STOCK
+    SIM --> CL
+    SIM --> MACHINES
+
+    POST --> CL
+    POST --> TOOLS
 
     CAM --> CAD
     CAM --> SKETCH
     CAM --> STOCK
+    CAM --> CL
+    CAM --> MACHINES
 
     CAD --> BVH
     SKETCH --> GEOM2D
+    STOCK --> BVH
     STOCK --> TOOLS
+    CL --> TOOLS
+    MACHINES --> TOOLS
+    FIXTURES --> MATH
 
     BVH --> MATH
     GEOM2D --> MATH
     TOOLS --> MATH
 ```
-> **Dependency Rule:** Components may only depend on components in **strictly lower layers** (never on peers in the same layer or components in higher layers). Arrows above indicate the primary layer progression; higher layers may also import types directly from any lower layer (for example, `chip-cam` and `chip-gui` also depend directly on `chip-math` and `chip-tools`). `chip-cam` uses `chip-sim` strictly as a `[dev-dependency]` for verification tests (no runtime cycle).
+> **Dependency Rule:** Components may only depend on components in **strictly lower layers** (never on peers in the same layer or components in higher layers). Arrows above indicate the primary layer progression; higher layers may also import types directly from any lower layer (for example, `chip-cam` and `chip-gui` also depend directly on `chip-math` and `chip-tools`). `chip-post` depends only on `chip-cl`, `chip-tools`, and `chip-math` (zero `chip-cam` or CAD dependency); `chip-cam` uses `chip-sim` strictly as a `[dev-dependency]` for verification tests, and core crates use `chip-fixtures` strictly as a `[dev-dependency]` (no runtime cycles).
 
 ---
 

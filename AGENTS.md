@@ -39,7 +39,7 @@
 ## 2. Non-Negotiable Architectural Invariants
 
 1. **UI-Agnostic Core Crates:**
-   `chip-math`, `chip-cad`, `chip-sketch`, `chip-tools`, `chip-cam`, `chip-sim`, `chip-post`, and `chip-project` must **never** depend on `egui`, `eframe`, `egui_tiles`, or `wgpu` (except optional headless GPU compute behind an explicit feature flag if ever introduced). Every core capability must work identically from `chip-cli` and `chip-gui`.
+   `chip-math`, `chip-bvh`, `chip-geom2d`, `chip-tools`, `chip-machines`, `chip-cl`, `chip-fixtures`, `chip-cad`, `chip-sketch`, `chip-stock`, `chip-cam`, `chip-sim`, `chip-post`, `chip-project`, and `chip-demos` must **never** depend on `egui`, `eframe`, `egui_tiles`, or `wgpu` (except optional headless GPU compute behind `chip-stock`'s `gpu-compute` feature flag). Every core capability must work identically from `chip-cli` and `chip-gui`.
 2. **Canonical `f64` Millimeter Kernel:**
    Store and compute all internal coordinates, radii, tolerances, and linear feedrates (`mm/min`) in `f64` millimeters. Convert units (`in`, `ipm`, `sfm`, SVG `DPI`) **only** at UI display/expression boundaries, DXF/SVG import boundaries, and inside `chip-post` when emitting `G20` vs `G21`.
 3. **Exact Geometry for Toolpaths (Never Viewport Meshes):**
@@ -50,10 +50,10 @@
    Isolate `monstertruck` (`monstertruck-io`, `monstertruck-modeling`, `monstertruck-meshing`) strictly inside `chip-cad`.
 6. **Explicit Regeneration (`Ctrl+G`), Zero Idle Clones, & Non-Blocking UI:**
    Editing parameters, sketches, tools, or setups mutates lightweight document state immediately (for `< 1 ms` Undo/Redo with zero idle per-frame document clones) and marks affected + downstream Rest Machining operations `Dirty`. Never run STEP/DXF/SVG loading, tessellation, polygon offsetting, Voronoi construction, or simulation synchronously on the `egui` thread; dispatch background `rayon` jobs with cancellation tokens.
-7. **Typed CL-Data Post Boundary:**
-   Toolpath generators in `chip-cam` emit typed `ClEvent` streams—never G-code strings. Dialect formatting, modal tracking, canned-cycle expansion, and ATC (`M6`) vs. split-file-per-tool partitioning belong exclusively in `chip-post`.
+7. **Typed CL-Data Post Boundary (`chip-cl`):**
+   Toolpath generators in `chip-cam` emit typed `chip_cl::ClEvent` streams—never G-code strings. `chip-post` depends only on `chip-cl`, `chip-tools`, and `chip-math` (never on `chip-cam` or CAD/geometry crates), owning dialect formatting, modal tracking, rotary G93/G94/unwind math, canned-cycle expansion, and ATC (`M6`) vs. split-file-per-tool partitioning.
 8. **Read-Only Built-In Presets & Upgrade-Safe User Config Space:**
-   Compiled-in built-in presets (machine definitions in `chip-tools`, post-processor profiles in `chip-post`) are strictly **read-only** and must never be shadowed or overwritten by project, `.chipz`, or user files so application upgrades update them cleanly. User clones, edits, and imported `.machine.toml` / `.post.toml` files live in OS user configuration space (`dirs::config_dir()/chipcutter/`).
+   Compiled-in built-in presets (machine definitions in `chip-machines`, post-processor profiles in `chip-post`) are strictly **read-only** and must never be shadowed or overwritten by project, `.chipz`, or user files so application upgrades update them cleanly. User clones, edits, and imported `.machine.toml` / `.post.toml` files live in OS user configuration space (`dirs::config_dir()/chipcutter/`) via the shared `PresetStore` (`chip-tools/user-config`).
 
 ---
 
